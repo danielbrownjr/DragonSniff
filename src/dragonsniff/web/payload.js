@@ -18,5 +18,25 @@
     return formatted === undefined ? null : formatted;
   }
 
-  return {payloadText};
+  function churnSummaryText(churn) {
+    if (!churn || !churn.run_id) return null;
+    const fields = [
+      "run_id", "state", "target", "configuration", "current_cycle", "total_cycles",
+      "successful_connections", "rejected_connections", "http_failures",
+      "transport_failures", "local_resource_failures", "remote_eof", "events_observed",
+      "parse_failures", "boot_id_changed", "boot_id_changes", "initial_boot_id",
+      "latest_boot_id", "cleanup_complete", "failure", "start_timestamp", "end_timestamp",
+      "elapsed_ms", "cycles",
+    ];
+    const summary = {};
+    fields.forEach((name) => { summary[name] = churn[name]; });
+    return JSON.stringify(summary, null, 2);
+  }
+
+  function churnHealthText(churn) {
+    const raw = churn?.latest_health?.raw_payload;
+    return typeof raw === "string" ? raw : null;
+  }
+
+  return {payloadText, churnSummaryText, churnHealthText};
 });

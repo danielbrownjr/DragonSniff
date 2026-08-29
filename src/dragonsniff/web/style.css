@@ -62,10 +62,10 @@ code, pre, .eyebrow, .timing, .metric strong, .endpoint-heading h2 {
   font-size: .76rem;
   white-space: nowrap;
 }
-[data-status="open"], [data-status="available"] { color: var(--ok); }
-[data-status="connecting"], [data-status="requesting"] { color: var(--primary); }
-[data-status="unavailable"], [data-status="closed"] { color: var(--warn); }
-[data-status="error"] { color: var(--bad); }
+[data-status="open"], [data-status="available"], [data-status="completed"] { color: var(--ok); }
+[data-status="connecting"], [data-status="requesting"], [data-status="running"] { color: var(--primary); }
+[data-status="unavailable"], [data-status="closed"], [data-status="stopping"], [data-status="cancelled"] { color: var(--warn); }
+[data-status="error"], [data-status="failed"] { color: var(--bad); }
 main { display: grid; gap: 12px; }
 .card, .metric, .file-warning {
   background: color-mix(in srgb, var(--background) 88%, var(--card));
@@ -89,6 +89,22 @@ input {
   padding: 9px 11px;
   font: inherit;
 }
+.churn-card { border-left: 4px solid var(--warn); }
+.churn-card .eyebrow { color: var(--warn); margin-bottom: 4px; }
+.churn-form { display: grid; gap: 10px; margin-top: 12px; }
+.config-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; }
+.config-grid label { margin: 0; }
+.config-grid input { width: 100%; margin-top: 5px; }
+.churn-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 9px;
+  margin-top: 12px;
+}
+.churn-metrics > div { min-width: 0; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.churn-metrics span { display: block; color: var(--muted-foreground); font-size: .68rem; text-transform: uppercase; letter-spacing: .07em; }
+.churn-metrics strong { display: block; margin-top: 5px; overflow-wrap: anywhere; font: 700 .8rem ui-monospace, SFMono-Regular, Consolas, monospace; }
+.churn-evidence { margin-top: 12px; }
 button, .button-link {
   display: inline-flex;
   min-height: 30px;
@@ -154,10 +170,10 @@ footer { padding: 24px 0 42px; color: var(--muted-foreground); text-align: cente
 
 @media (max-width: 900px) {
   .summary-grid, .endpoint-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .limits { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .limits, .config-grid, .churn-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 620px) {
   header { align-items: start; flex-direction: column; padding-top: 26px; }
-  .summary-grid, .endpoint-grid, .split { grid-template-columns: minmax(0, 1fr); }
+  .summary-grid, .endpoint-grid, .split, .config-grid, .churn-metrics { grid-template-columns: minmax(0, 1fr); }
   .control-row > * { width: 100%; }
 }
