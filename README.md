@@ -1,4 +1,4 @@
-# DragonSniff 🐉👃
+# DragonSniff
 
 **A local developer tool for sniffing out what Dragon-family devices are doing.**
 
@@ -101,7 +101,7 @@ A diagnostic tool also changes the system it observes: HTTP requests consume soc
 
 ## Status
 
-🌱 **Very early.** The project charter exists; implementation choices are intentionally not frozen yet.
+**Very early.** The project charter exists; implementation choices are intentionally not frozen yet.
 
 The immediate use case that inspired DragonSniff is repeatable observation of Dragon-family HTTP/SSE behavior during hardware validation. That is a useful first target, not permission to grow a dragon-sized monitoring platform before the basics work.
 
