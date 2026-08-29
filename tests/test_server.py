@@ -71,6 +71,16 @@ class ServerTests(TestCase):
             records = [json.loads(line) for line in export.splitlines()]
             self.assertTrue(any(record["kind"] == "sse_event" for record in records))
 
+    def test_static_ui_explains_direct_file_use_and_exposes_copy_controls(self) -> None:
+        with LocalServerFixture() as local:
+            status, body, _ = local.request("GET", "/")
+        html = body.decode()
+        self.assertEqual(status, 200)
+        self.assertIn("DragonSniff is not a standalone HTML file", html)
+        self.assertEqual(html.count('data-copy-view="parsed"'), 3)
+        self.assertEqual(html.count('data-copy-view="raw"'), 3)
+        self.assertIn("Stop event stream", html)
+
     def test_invalid_target_is_rejected_without_starting_a_session(self) -> None:
         with LocalServerFixture() as local:
             status, body, _ = local.request(
@@ -80,4 +90,3 @@ class ServerTests(TestCase):
             self.assertEqual(json.loads(body)["error"], "invalid_request")
             _, body, _ = local.request("GET", "/local/v1/session")
             self.assertEqual(json.loads(body)["session_state"], "idle")
-

@@ -16,6 +16,7 @@ from .target import TargetValidationError, parse_target
 MAX_LOCAL_REQUEST_BYTES = 16_384
 STATIC_FILES = {
     "/": ("index.html", "text/html; charset=utf-8"),
+    "/payload.js": ("payload.js", "text/javascript; charset=utf-8"),
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/style.css": ("style.css", "text/css; charset=utf-8"),
 }
@@ -51,12 +52,19 @@ class SessionManager:
         started = observer.refresh()
         return started, observer.snapshot()
 
-    def reconnect(self) -> dict[str, Any]:
+    def reconnect(self) -> tuple[bool, dict[str, Any]]:
         observer = self.current()
         if observer is None:
             raise RuntimeError("no observation session is active")
-        observer.reconnect_events()
-        return observer.snapshot()
+        started = observer.reconnect_events()
+        return started, observer.snapshot()
+
+    def stop_events(self) -> tuple[bool, dict[str, Any]]:
+        observer = self.current()
+        if observer is None:
+            raise RuntimeError("no observation session is active")
+        stopped = observer.stop_events()
+        return stopped, observer.snapshot()
 
     def current(self) -> Observer | None:
         with self._lock:
@@ -85,6 +93,8 @@ class SessionManager:
                 "max_sse_event_bytes": 262_144,
                 "max_session_records": 2_000,
                 "local_request_concurrency": 1,
+                "sse_connect_timeout_seconds": 5.0,
+                "sse_inactivity_timeout": "disabled",
             },
             "recent_records": [],
         }
@@ -135,7 +145,11 @@ class DragonSniffHandler(BaseHTTPRequestHandler):
                 started, result = self.manager.refresh()
                 self._send_json(202 if started else 409, result)
             elif path == "/local/v1/session/reconnect-events":
-                self._send_json(202, self.manager.reconnect())
+                started, result = self.manager.reconnect()
+                self._send_json(202 if started else 409, result)
+            elif path == "/local/v1/session/stop-events":
+                stopped, result = self.manager.stop_events()
+                self._send_json(200 if stopped else 409, result)
             else:
                 self._send_json(404, {"error": "not_found"})
         except (TargetValidationError, ValueError, RuntimeError) as exc:
@@ -200,4 +214,3 @@ class DragonSniffServer(HTTPServer):
         if observer is not None:
             observer.stop()
         super().server_close()
-
