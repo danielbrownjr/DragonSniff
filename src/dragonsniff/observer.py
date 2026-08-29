@@ -125,9 +125,11 @@ class Observer:
         with self._lock:
             if generation != self._generation:
                 return
-            if state == "closed" and details.get("reason") == "unavailable":
+            closing = state == "closed"
+            if closing and details.get("reason") == "unavailable":
                 state = "unavailable"
-            self._state["sse"].update({"state": state, "details": deepcopy(details)})
+            self._state["sse"]["state"] = state
+            self._state["sse"]["close_details" if closing else "details"] = deepcopy(details)
 
     def _stop_stream(self) -> None:
         with self._lock:

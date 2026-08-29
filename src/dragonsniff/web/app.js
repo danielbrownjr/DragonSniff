@@ -71,16 +71,18 @@ function renderTimeline(records) {
 }
 
 function render(snapshot) {
+  const sse = snapshot.sse || {};
+  const sseTiming = sse.details?.elapsed_ms === undefined ? "" : ` / ${sse.details.elapsed_ms.toFixed(1)} ms`;
   text("#sessionBadge", snapshot.session_state || "idle");
   text("#targetValue", snapshot.target || "not connected");
-  text("#sseState", snapshot.sse?.state || "not connected");
-  text("#sseDetail", snapshot.sse?.state || "not connected");
-  text("#eventCount", snapshot.sse?.events || 0);
+  text("#sseState", sse.state || "not connected");
+  text("#sseDetail", `${sse.state || "not connected"}${sseTiming}`);
+  text("#eventCount", sse.events || 0);
   text("#recordCount", `${snapshot.recorder?.records || 0} / ${snapshot.recorder?.max_records || 0}`);
   endpoints.forEach((path) => renderEndpoint(path, snapshot.http?.[path]));
   renderLimits(snapshot.limits);
   renderTimeline(snapshot.recent_records);
-  const event = snapshot.sse?.last_event;
+  const event = sse.last_event;
   text("#eventParsed", event ? pretty(event.parsed, event.data || "No parsed data") : "No event");
   text("#eventRaw", event?.raw_payload || "No event");
   const active = !["idle", "stopped"].includes(snapshot.session_state);

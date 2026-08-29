@@ -57,3 +57,15 @@ class ObserverTests(TestCase):
 
         self.assertEqual(snapshot["sse"]["generation"], first_generation + 1)
         self.assertLessEqual(snapshot["limits"]["active_device_connections"], 2)
+
+    def test_unavailable_stream_keeps_rejection_status_visible(self) -> None:
+        with DeviceFixture({"events_status": 503}) as fixture:
+            target = parse_target(fixture.target)
+            observer = Observer(target)
+            observer.start()
+            wait_until(lambda: observer.snapshot()["sse"]["state"] == "unavailable")
+            snapshot = observer.snapshot()
+            observer.stop()
+
+        self.assertEqual(snapshot["sse"]["details"]["status"], 503)
+        self.assertEqual(snapshot["sse"]["close_details"]["reason"], "unavailable")
