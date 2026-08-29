@@ -38,6 +38,8 @@ The initial project does **not** own or provide:
 
 If a feature would let DragonSniff become part of a device's safety or control boundary, it does not belong in the initial scope.
 
+> **Is this scope creep? Yes. Anyway.**
+
 ## Architecture
 
 DragonSniff uses a small local host service between the browser and the device. The service binds only to `127.0.0.1`, makes the fixed read-only Dragon API requests, records their raw results, and serves the application UI. The browser never connects to the Dragon directly, so product firmware does not need developer-tool CORS behavior.
