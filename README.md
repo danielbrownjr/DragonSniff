@@ -38,48 +38,49 @@ The initial project does **not** own or provide:
 
 If a feature would let DragonSniff become part of a device's safety or control boundary, it does not belong in the initial scope.
 
-## Architecture direction
+## Architecture
 
-DragonSniff should consume the public/common Dragon API rather than reach into firmware implementation details.
+DragonSniff uses a small local host service between the browser and the device. The service binds only to `127.0.0.1`, makes the fixed read-only Dragon API requests, records their raw results, and serves the application UI. The browser never connects to the Dragon directly, so product firmware does not need developer-tool CORS behavior.
 
 ```text
-DragonSniff
-    |
-    +-- Dragon API v2
-    |     +-- /api/v2/info
-    |     +-- /api/v2/state
-    |     +-- /api/v2/health
-    |     +-- /api/v2/events
-    |
-    +-- Recorder
-    |     +-- timestamps
-    |     +-- raw payloads
-    |     +-- connection lifecycle
-    |     +-- derived timing
-    |     +-- export
-    |
-    +-- Optional capability adapters
-          +-- generic Dragon
-          +-- DragonBreath
-          +-- Jump Jet
+Dragon device -- HTTP API and optional SSE --> local Python service --> browser UI
 ```
 
-Raw payloads are first-class evidence. A field DragonSniff does not understand should remain visible and recordable rather than being silently discarded.
+The runtime uses Python 3.11 or newer and only the standard library. Device traffic is bounded to two concurrent connections, local application requests are serialized, JSON responses are capped at 1 MiB, individual SSE events are capped at 256 KiB, and the in-memory session retains at most 2,000 records. These limits and current device-connection use are visible in the UI.
 
-Product-specific adapters may improve presentation, but the generic observer must remain useful when talking to a future Dragon it has never met before.
+Only these device requests exist:
 
-## First sniff
+- `GET /api/v2/info`
+- `GET /api/v2/state`
+- `GET /api/v2/health`
+- `GET /api/v2/events`
 
-The first useful milestone is intentionally boring:
+There is no generic device proxy and no device mutation route. Raw payloads are first-class evidence. Parsed views never discard fields that DragonSniff does not recognize.
 
-1. Connect to one explicitly supplied local Dragon device.
-2. Fetch and display info, state, and health.
-3. Open and visibly monitor the SSE stream.
-4. Record timestamped request/event/connection history.
-5. Export the session.
-6. Exercise a small, bounded SSE connect/disconnect/reconnect test.
+## Run the first sniff
 
-No automatic network scanning is required for the first milestone. No control mutations are required at all.
+From a checkout with Python 3.11 or newer:
+
+```console
+python -m pip install -e .
+dragonsniff
+```
+
+Open `http://127.0.0.1:8765`, enter an authorized local Dragon hostname or address, and start the session. You can also supply the initial target on the command line:
+
+```console
+dragonsniff --target dragonbreath.local
+```
+
+Use **Refresh JSON endpoints** for another serialized pass over info, state, and health. Use **Reconnect event stream** for one deliberate disconnect/reconnect. DragonSniff does not automatically retry a failed SSE stream in V1; that keeps failure evidence clear and avoids accidental churn. **Bag evidence as JSONL** downloads every retained lifecycle record in arrival order.
+
+Run the tests without installing the package:
+
+```console
+PYTHONPATH=src python -m unittest discover -s tests -v
+```
+
+See [Dragon API findings](docs/dragon-api-findings.md) for the contracts observed in current firmware and the important distinction between common and optional behavior.
 
 ## Design rules
 
@@ -101,9 +102,7 @@ A diagnostic tool also changes the system it observes: HTTP requests consume soc
 
 ## Status
 
-**Very early.** The project charter exists; implementation choices are intentionally not frozen yet.
-
-The immediate use case that inspired DragonSniff is repeatable observation of Dragon-family HTTP/SSE behavior during hardware validation. That is a useful first target, not permission to grow a dragon-sized monitoring platform before the basics work.
+Issue #1 has a coherent local first vertical slice. It has automated fixture coverage but has not yet been exercised against physical Dragon hardware. The bounded churn runner from Issue #2 remains future work.
 
 ## Name
 
