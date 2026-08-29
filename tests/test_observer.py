@@ -1,4 +1,5 @@
 import time
+import threading
 from typing import Callable
 from unittest import TestCase
 
@@ -69,3 +70,26 @@ class ObserverTests(TestCase):
 
         self.assertEqual(snapshot["sse"]["details"]["status"], 503)
         self.assertEqual(snapshot["sse"]["close_details"]["reason"], "unavailable")
+
+    def test_repeated_reconnect_and_stream_stop_release_workers_and_budget(self) -> None:
+        with DeviceFixture({"quiet_seconds": 0.8}) as fixture:
+            target = parse_target(fixture.target)
+            observer = Observer(target)
+            observer.start()
+            wait_until(lambda: observer.snapshot()["sse"]["state"] == "open")
+
+            for _ in range(3):
+                observer.stop_events()
+                wait_until(lambda: observer.snapshot()["sse"]["state"] == "stopped")
+                self.assertEqual(observer.client.budget.active, 0)
+                self.assertFalse(
+                    any(thread.name.startswith("dragonsniff-sse-") for thread in threading.enumerate())
+                )
+                observer.reconnect_events()
+                wait_until(lambda: observer.snapshot()["sse"]["state"] == "open")
+
+            observer.stop_events()
+            observer.stop()
+
+        self.assertEqual(observer.client.budget.active, 0)
+        self.assertFalse(any(thread.name.startswith("dragonsniff-sse-") for thread in threading.enumerate()))

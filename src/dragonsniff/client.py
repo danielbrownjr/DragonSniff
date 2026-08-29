@@ -74,6 +74,15 @@ def _decode(body: bytes) -> tuple[str, str | None]:
         return body.decode("utf-8", errors="replace"), str(exc)
 
 
+def _response_socket(response: Any) -> socket.socket | None:
+    """Return urllib's underlying socket when running on the supported CPython stack."""
+
+    fp = getattr(response, "fp", None)
+    raw = getattr(fp, "raw", None)
+    candidate = getattr(raw, "_sock", None)
+    return candidate if isinstance(candidate, socket.socket) else None
+
+
 class DragonClient:
     """Observe only the fixed Dragon API endpoints; never issue device mutations."""
 
@@ -84,6 +93,7 @@ class DragonClient:
         *,
         connection_limit: int = 2,
         request_timeout: float = 5.0,
+        sse_connect_timeout: float = 5.0,
         max_response_bytes: int = 1_048_576,
         max_event_bytes: int = 262_144,
         opener: Callable[..., Any] = urlopen,
@@ -92,6 +102,7 @@ class DragonClient:
         self.recorder = recorder
         self.budget = ConnectionBudget(connection_limit)
         self.request_timeout = request_timeout
+        self.sse_connect_timeout = sse_connect_timeout
         self.max_response_bytes = max_response_bytes
         self.max_event_bytes = max_event_bytes
         self._opener = opener
@@ -99,6 +110,7 @@ class DragonClient:
         self._sequence_lock = Lock()
         self._stream_lock = Lock()
         self._stream_response: Any | None = None
+        self._stream_socket: socket.socket | None = None
 
     def _request_id(self) -> int:
         with self._sequence_lock:
@@ -200,7 +212,7 @@ class DragonClient:
         try:
             with self.budget.lease():
                 try:
-                    response = self._opener(self._request(url), timeout=self.request_timeout)
+                    response = self._opener(self._request(url), timeout=self.sse_connect_timeout)
                 except HTTPError as exc:
                     body = exc.read(self.max_response_bytes + 1)[: self.max_response_bytes]
                     raw, decode_error = _decode(body)
@@ -219,8 +231,15 @@ class DragonClient:
                     exit_reason = "unavailable"
                     return
                 with response:
+                    stream_socket = _response_socket(response)
+                    if stream_socket is not None:
+                        # The timeout above bounds connection establishment only. SSE
+                        # streams may be valid and indefinitely quiet, so established
+                        # streams have no application-level inactivity deadline.
+                        stream_socket.settimeout(None)
                     with self._stream_lock:
                         self._stream_response = response
+                        self._stream_socket = stream_socket
                     details = {
                         "request_id": request_id,
                         "endpoint": path,
@@ -236,7 +255,15 @@ class DragonClient:
                         recorded = self.recorder.append("sse_event", request_id=request_id, **event)
                         on_event(recorded)
                     exit_reason = "stopped" if stop.is_set() else "end_of_stream"
-        except (OSError, URLError, TimeoutError, ResponseTooLargeError, socket.timeout, ValueError) as exc:
+        except (
+            OSError,
+            URLError,
+            TimeoutError,
+            ResponseTooLargeError,
+            socket.timeout,
+            ValueError,
+            AttributeError,
+        ) as exc:
             if stop.is_set():
                 exit_reason = "stopped"
             else:
@@ -252,6 +279,7 @@ class DragonClient:
         finally:
             with self._stream_lock:
                 self._stream_response = None
+                self._stream_socket = None
             details = {"request_id": request_id, "endpoint": path, "reason": exit_reason}
             self.recorder.append("sse_closed", **details)
             on_state("closed", details)
@@ -259,6 +287,12 @@ class DragonClient:
     def close_stream(self) -> None:
         with self._stream_lock:
             response = self._stream_response
+            stream_socket = self._stream_socket
+        if stream_socket is not None:
+            try:
+                stream_socket.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
         if response is not None:
             response.close()
 

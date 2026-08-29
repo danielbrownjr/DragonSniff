@@ -1,5 +1,6 @@
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Event, Thread
+import time
 from unittest import TestCase
 
 from dragonsniff.client import ConnectionBudget, DragonClient
@@ -25,6 +26,9 @@ class FixtureHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.end_headers()
+            if config.get("quiet_seconds"):
+                time.sleep(config["quiet_seconds"])
+                return
             self.wfile.write(b": connected\n\n")
             self.wfile.write(b"event: telemetry\nid: abc\ndata: {\"known\":1,\"unknown\":2}\n\n")
             self.wfile.flush()
@@ -55,6 +59,29 @@ class DeviceFixture:
     @property
     def target(self) -> str:
         return f"127.0.0.1:{self.server.server_port}"
+
+
+class BlockingTeardownResponse:
+    status = 200
+    headers = {"Content-Type": "text/event-stream"}
+
+    def __init__(self) -> None:
+        self.read_started = Event()
+        self.closed = Event()
+
+    def __enter__(self) -> "BlockingTeardownResponse":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()
+
+    def readline(self, limit: int) -> bytes:
+        self.read_started.set()
+        self.closed.wait(timeout=1)
+        raise AttributeError("'NoneType' object has no attribute 'peek'")
+
+    def close(self) -> None:
+        self.closed.set()
 
 
 class ClientTests(TestCase):
@@ -111,6 +138,97 @@ class ClientTests(TestCase):
         self.assertEqual(events[1]["event_id"], "abc")
         self.assertEqual(events[1]["parsed"], {"known": 1, "unknown": 2})
         self.assertEqual(events[1]["raw_payload"], 'event: telemetry\nid: abc\ndata: {"known":1,"unknown":2}\n\n')
+        self.assertEqual(client.budget.active, 0)
+
+    def test_quiet_sse_stream_has_no_application_inactivity_timeout(self) -> None:
+        with DeviceFixture({"quiet_seconds": 0.5}) as fixture:
+            recorder = SessionRecorder()
+            client = DragonClient(
+                parse_target(fixture.target),
+                recorder,
+                request_timeout=0.05,
+                sse_connect_timeout=0.05,
+            )
+            stop = Event()
+            states: list[str] = []
+            thread = Thread(
+                target=client.stream_events,
+                args=(stop, lambda event: None, lambda state, data: states.append(state)),
+            )
+            thread.start()
+            deadline = time.monotonic() + 1
+            while "open" not in states and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertIn("open", states)
+            time.sleep(0.15)
+            self.assertTrue(thread.is_alive())
+            self.assertNotIn("error", states)
+            stop.set()
+            client.close_stream()
+            thread.join(timeout=1)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(states[-1], "closed")
+        self.assertEqual(client.budget.active, 0)
+
+    def test_intentional_close_translates_blocked_reader_attribute_error_to_stop(self) -> None:
+        response = BlockingTeardownResponse()
+        recorder = SessionRecorder()
+        client = DragonClient(
+            parse_target("dragon.local"),
+            recorder,
+            opener=lambda request, timeout: response,
+        )
+        stop = Event()
+        states: list[tuple[str, dict[str, object]]] = []
+        escaped: list[BaseException] = []
+
+        def run() -> None:
+            try:
+                client.stream_events(
+                    stop,
+                    lambda event: None,
+                    lambda state, details: states.append((state, details)),
+                )
+            except BaseException as exc:
+                escaped.append(exc)
+
+        thread = Thread(target=run)
+        thread.start()
+        self.assertTrue(response.read_started.wait(timeout=1))
+        stop.set()
+        client.close_stream()
+        thread.join(timeout=1)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(escaped, [])
+        self.assertEqual(states[-1], ("closed", {"request_id": 1, "endpoint": "/api/v2/events", "reason": "stopped"}))
+        self.assertFalse(any(record["kind"] == "sse_error" for record in recorder.snapshot()))
+        self.assertEqual(client.budget.active, 0)
+
+    def test_reader_attribute_error_without_stop_is_recorded_as_failure(self) -> None:
+        response = BlockingTeardownResponse()
+        recorder = SessionRecorder()
+        client = DragonClient(
+            parse_target("dragon.local"),
+            recorder,
+            opener=lambda request, timeout: response,
+        )
+        states: list[tuple[str, dict[str, object]]] = []
+        thread = Thread(
+            target=client.stream_events,
+            args=(Event(), lambda event: None, lambda state, details: states.append((state, details))),
+        )
+        thread.start()
+        self.assertTrue(response.read_started.wait(timeout=1))
+        response.close()
+        thread.join(timeout=1)
+
+        self.assertFalse(thread.is_alive())
+        self.assertIn("error", [state for state, details in states])
+        error = next(record for record in recorder.snapshot() if record["kind"] == "sse_error")
+        self.assertIn("AttributeError", error["error"])
+        self.assertEqual(states[-1][1]["reason"], "error")
         self.assertEqual(client.budget.active, 0)
 
     def test_connection_budget_reports_active_use_and_releases(self) -> None:
