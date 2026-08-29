@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DragonSniff</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <div>
+      <p class="eyebrow">Local Dragon observatory</p>
+      <h1>DragonSniff</h1>
+      <p class="lede">Sniff out one Dragon, follow the smoke, and bag the raw evidence.</p>
+    </div>
+    <div id="sessionBadge" class="badge">idle</div>
+  </header>
+
+  <section id="fileWarning" class="file-warning" hidden aria-labelledby="file-warning-heading">
+    <h2 id="file-warning-heading">DragonSniff is not a standalone HTML file</h2>
+    <p>The browser UI must be served by the local DragonSniff service. Opening this file directly cannot connect to its local application API.</p>
+    <p>From the repository, run <code>python -m pip install -e .</code>, then <code>dragonsniff</code>, and open <code>http://127.0.0.1:8765</code>.</p>
+  </section>
+
+  <main>
+    <section class="card connect-card" aria-labelledby="connect-heading">
+      <div>
+        <h2 id="connect-heading">Sniff out a Dragon</h2>
+        <p>Enter an authorized local hostname, IP, or HTTP(S) origin. Device requests are fixed read-only GETs.</p>
+      </div>
+      <form id="connectForm">
+        <label for="target">Dragon address</label>
+        <div class="control-row">
+          <input id="target" name="target" placeholder="dragonbreath.local" autocomplete="off" required>
+          <button type="submit" class="primary">Start session</button>
+        </div>
+      </form>
+      <div class="actions">
+        <button id="refreshButton" type="button">Refresh JSON endpoints</button>
+        <button id="reconnectButton" type="button">Reconnect event stream</button>
+        <button id="stopEventsButton" type="button">Stop event stream</button>
+        <button id="stopButton" type="button">Stop session</button>
+        <a id="exportLink" class="button-link" href="/local/v1/session/export" download>Bag evidence as JSONL</a>
+      </div>
+      <p id="notice" class="notice" role="status" aria-live="polite"></p>
+    </section>
+
+    <section class="summary-grid" aria-label="Connection summary">
+      <article class="metric"><span>Target</span><strong id="targetValue">not connected</strong></article>
+      <article class="metric"><span>Event stream</span><strong id="sseState">not connected</strong></article>
+      <article class="metric"><span>Events recorded</span><strong id="eventCount">0</strong></article>
+      <article class="metric"><span>Session records</span><strong id="recordCount">0</strong></article>
+    </section>
+
+    <section class="card" aria-labelledby="limits-heading">
+      <h2 id="limits-heading">Observer footprint</h2>
+      <p>The limits below are hard ceilings, not current device capacity.</p>
+      <dl id="limits" class="limits"></dl>
+    </section>
+
+    <section class="endpoint-grid" aria-label="Dragon API responses">
+      <article class="card endpoint" data-endpoint="/api/v2/info">
+        <div class="endpoint-heading"><h2>/api/v2/info</h2><span class="endpoint-state">not requested</span></div>
+        <p class="timing">No timing yet</p>
+        <details open><summary>Parsed JSON</summary><div class="view-toolbar"><button type="button" class="copy-button" data-copy-view="parsed">Copy parsed JSON</button><span class="copy-feedback" role="status" aria-live="polite"></span></div><pre class="parsed">No payload</pre></details>
+        <details><summary>Raw response</summary><div class="view-toolbar"><button type="button" class="copy-button" data-copy-view="raw">Copy raw response</button><span class="copy-feedback" role="status" aria-live="polite"></span></div><pre class="raw">No payload</pre></details>
+      </article>
+      <article class="card endpoint" data-endpoint="/api/v2/state">
+        <div class="endpoint-heading"><h2>/api/v2/state</h2><span class="endpoint-state">not requested</span></div>
+        <p class="timing">No timing yet</p>
+        <details open><summary>Parsed JSON</summary><div class="view-toolbar"><button type="button" class="copy-button" data-copy-view="parsed">Copy parsed JSON</button><span class="copy-feedback" role="status" aria-live="polite"></span></div><pre class="parsed">No payload</pre></details>
+        <details><summary>Raw response</summary><div class="view-toolbar"><button type="button" class="copy-button" data-copy-view="raw">Copy raw response</button><span class="copy-feedback" role="status" aria-live="polite"></span></div><pre class="raw">No payload</pre></details>
+      </article>
+      <article class="card endpoint" data-endpoint="/api/v2/health">
+        <div class="endpoint-heading"><h2>/api/v2/health</h2><span class="endpoint-state">not requested</span></div>
+        <p class="timing">No timing yet</p>
+        <details open><summary>Parsed JSON</summary><div class="view-toolbar"><button type="button" class="copy-button" data-copy-view="parsed">Copy parsed JSON</button><span class="copy-feedback" role="status" aria-live="polite"></span></div><pre class="parsed">No payload</pre></details>
+        <details><summary>Raw response</summary><div class="view-toolbar"><button type="button" class="copy-button" data-copy-view="raw">Copy raw response</button><span class="copy-feedback" role="status" aria-live="polite"></span></div><pre class="raw">No payload</pre></details>
+      </article>
+    </section>
+
+    <section class="card" aria-labelledby="events-heading">
+      <div class="endpoint-heading">
+        <div><h2 id="events-heading">Follow the smoke</h2><p>Latest raw SSE event and parsed data, if available.</p></div>
+        <span id="sseDetail" class="endpoint-state">not connected</span>
+      </div>
+      <div class="split">
+        <div><h3>Parsed event</h3><pre id="eventParsed">No event</pre></div>
+        <div><h3>Raw event</h3><pre id="eventRaw">No event</pre></div>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="timeline-heading">
+      <h2 id="timeline-heading">Timestamped lifecycle</h2>
+      <p>Newest observations appear first. The JSONL export contains the retained session in arrival order.</p>
+      <ol id="timeline" class="timeline"></ol>
+    </section>
+  </main>
+
+  <footer>DragonSniff observes communications. It does not control product behavior.</footer>
+  <script src="payload.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

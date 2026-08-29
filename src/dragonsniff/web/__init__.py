@@ -1,0 +1,1 @@
+"""Packaged DragonSniff browser assets."""
