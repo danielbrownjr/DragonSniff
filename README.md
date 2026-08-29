@@ -46,7 +46,7 @@ DragonSniff uses a small local host service between the browser and the device. 
 Dragon device -- HTTP API and optional SSE --> local Python service --> browser UI
 ```
 
-The runtime uses Python 3.11 or newer and only the standard library. Device traffic is bounded to two concurrent connections, local application requests are serialized, JSON responses are capped at 1 MiB, individual SSE events are capped at 256 KiB, and the in-memory session retains at most 2,000 records. These limits and current device-connection use are visible in the UI.
+The runtime uses Python 3.11 or newer and only the standard library. DragonSniff intentionally bounds its own device traffic to two concurrent connections, local application requests are serialized, JSON responses are capped at 1 MiB, individual SSE events are capped at 256 KiB, and the in-memory session retains at most 2,000 records. These limits and current device-connection use are visible in the UI. The two-connection limit is DragonSniff's local resource budget; it is independent of any product's server-side SSE cap.
 
 Only these device requests exist:
 
@@ -59,20 +59,24 @@ There is no generic device proxy and no device mutation route. Raw payloads are 
 
 ## Run the first sniff
 
-From a checkout with Python 3.11 or newer:
+**Do not double-click `src/dragonsniff/web/index.html` or open it as a `file://` URL.** The browser UI depends on the local DragonSniff service. Direct file opening now shows an explanation, but it cannot start a session.
+
+From the repository checkout, install and launch with Python 3.11 or newer:
 
 ```console
 python -m pip install -e .
 dragonsniff
 ```
 
-Open `http://127.0.0.1:8765`, enter an authorized local Dragon hostname or address, and start the session. You can also supply the initial target on the command line:
+Then open exactly `http://127.0.0.1:8765` in a browser, enter an authorized local Dragon hostname or address, and start the session. You can also supply the initial target on the command line:
 
 ```console
 dragonsniff --target dragonbreath.local
 ```
 
-Use **Refresh JSON endpoints** for another serialized pass over info, state, and health. Use **Reconnect event stream** for one deliberate disconnect/reconnect. DragonSniff does not automatically retry a failed SSE stream in V1; that keeps failure evidence clear and avoids accidental churn. **Bag evidence as JSONL** downloads every retained lifecycle record in arrival order.
+Use **Refresh JSON endpoints** for another serialized pass over info, state, and health. **Stop event stream** intentionally closes only SSE while leaving the observation session active. **Reconnect event stream** starts one new stream after stopping any current one. DragonSniff does not automatically retry a failed SSE stream in V1; that keeps failure evidence clear and avoids accidental churn. **Stop session** closes the stream and ends the local session. **Bag evidence as JSONL** downloads every retained lifecycle record in arrival order.
+
+SSE has a five-second connection-establishment timeout but no application-level inactivity timeout after the stream opens. A future Dragon may have a valid quiet stream. Explicit Stop/Reconnect and real network errors still end the connection; silence alone does not.
 
 Run the tests without installing the package:
 
@@ -81,6 +85,7 @@ PYTHONPATH=src python -m unittest discover -s tests -v
 ```
 
 See [Dragon API findings](docs/dragon-api-findings.md) for the contracts observed in current firmware and the important distinction between common and optional behavior.
+The first physical acceptance evidence is recorded in [DragonBreath Issue #1 hardware validation](docs/hardware-validation.md).
 
 ## Design rules
 
@@ -102,7 +107,7 @@ A diagnostic tool also changes the system it observes: HTTP requests consume soc
 
 ## Status
 
-Issue #1 has a coherent local first vertical slice. It has automated fixture coverage but has not yet been exercised against physical Dragon hardware. The bounded churn runner from Issue #2 remains future work.
+Issue #1 has a coherent local first vertical slice. Physical DragonBreath testing has verified info, state, health, SSE rejection at product capacity, later successful SSE connection, live event recording, explicit cleanup, heap recovery, and JSONL export. The bounded churn runner from Issue #2 remains future work.
 
 ## Name
 
