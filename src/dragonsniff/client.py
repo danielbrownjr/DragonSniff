@@ -137,13 +137,18 @@ class DragonClient:
             },
         )
 
-    def fetch_json(self, path: str) -> dict[str, Any]:
+    def fetch_json(
+        self, path: str, *, context: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         if path not in JSON_ENDPOINTS:
             raise ValueError("only the fixed read-only JSON endpoints are allowed")
         request_id = self._request_id()
         url = self.target.endpoint(path)
         started = time.monotonic_ns()
-        self.recorder.append("http_request", request_id=request_id, method="GET", endpoint=path)
+        record_context = dict(context or {})
+        self.recorder.append(
+            "http_request", **record_context, request_id=request_id, method="GET", endpoint=path
+        )
         try:
             with self.budget.lease():
                 with self._opener(self._request(url), timeout=self.request_timeout) as response:
@@ -165,7 +170,7 @@ class DragonClient:
                 "parse_error": parse_error,
                 "ok": 200 <= status < 300 and parse_error is None,
             }
-            self.recorder.append("http_response", **result)
+            self.recorder.append("http_response", **record_context, **result)
             return result
         except HTTPError as exc:
             body = exc.read(self.max_response_bytes + 1)
@@ -189,7 +194,7 @@ class DragonClient:
                 "parse_error": parse_error,
                 "ok": False,
             }
-            self.recorder.append("http_response", **result)
+            self.recorder.append("http_response", **record_context, **result)
             return result
         except (OSError, URLError, TimeoutError, ResponseTooLargeError) as exc:
             result = {
@@ -200,7 +205,7 @@ class DragonClient:
                 "error": f"{type(exc).__name__}: {exc}",
                 "ok": False,
             }
-            self.recorder.append("http_error", **result)
+            self.recorder.append("http_error", **record_context, **result)
             return result
 
     def stream_events(
@@ -208,13 +213,18 @@ class DragonClient:
         stop: Event,
         on_event: Callable[[dict[str, Any]], None],
         on_state: Callable[[str, dict[str, Any]], None],
+        *,
+        context: dict[str, Any] | None = None,
     ) -> None:
         request_id = self._request_id()
         path = EVENTS_ENDPOINT
         url = self.target.endpoint(path)
         started = time.monotonic_ns()
-        self.recorder.append("sse_connecting", request_id=request_id, endpoint=path)
-        on_state("connecting", {"request_id": request_id})
+        record_context = dict(context or {})
+        self.recorder.append(
+            "sse_connecting", **record_context, request_id=request_id, endpoint=path
+        )
+        on_state("connecting", {**record_context, "request_id": request_id})
         exit_reason = "error"
         try:
             with self.budget.lease():
@@ -223,7 +233,9 @@ class DragonClient:
                 except HTTPError as exc:
                     body = exc.read(self.max_response_bytes + 1)[: self.max_response_bytes]
                     raw, decode_error = _decode(body)
+                    parsed, parse_error = _parse_json(raw)
                     details = {
+                        **record_context,
                         "request_id": request_id,
                         "endpoint": path,
                         "status": exc.code,
@@ -231,6 +243,8 @@ class DragonClient:
                         "headers": {name.lower(): value for name, value in exc.headers.items()},
                         "raw_payload": raw,
                         "decode_error": decode_error,
+                        "parsed": parsed,
+                        "parse_error": parse_error,
                         "error": f"HTTP {exc.code}",
                     }
                     self.recorder.append("sse_unavailable", **details)
@@ -252,6 +266,7 @@ class DragonClient:
                         self._stream_response = response
                         self._stream_socket = stream_socket
                     details = {
+                        **record_context,
                         "request_id": request_id,
                         "endpoint": path,
                         "status": response.status,
@@ -268,7 +283,9 @@ class DragonClient:
                         kind = "sse_event" if dispatch else (
                             "sse_comment" if comment_only else "sse_ignored"
                         )
-                        recorded = self.recorder.append(kind, request_id=request_id, **event)
+                        recorded = self.recorder.append(
+                            kind, **record_context, request_id=request_id, **event
+                        )
                         if dispatch:
                             on_event(recorded)
                     exit_reason = "stopped" if stop.is_set() else "end_of_stream"
@@ -287,6 +304,7 @@ class DragonClient:
             else:
                 exit_reason = "error"
                 details = {
+                    **record_context,
                     "request_id": request_id,
                     "endpoint": path,
                     "error": f"{type(exc).__name__}: {exc}",
@@ -298,7 +316,12 @@ class DragonClient:
             with self._stream_lock:
                 self._stream_response = None
                 self._stream_socket = None
-            details = {"request_id": request_id, "endpoint": path, "reason": exit_reason}
+            details = {
+                **record_context,
+                "request_id": request_id,
+                "endpoint": path,
+                "reason": exit_reason,
+            }
             self.recorder.append("sse_closed", **details)
             on_state("closed", details)
 
