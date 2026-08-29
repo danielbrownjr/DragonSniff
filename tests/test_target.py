@@ -28,4 +28,3 @@ class TargetTests(TestCase):
         self.assertEqual(target.endpoint("/api/v2/info"), "http://dragon.local/api/v2/info")
         with self.assertRaises(ValueError):
             target.endpoint("/api/v1/settings")
-

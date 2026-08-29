@@ -17,4 +17,3 @@ dragonsniff = "dragonsniff.__main__:main"
 
 [tool.setuptools.package-data]
 dragonsniff = ["web/*"]
-

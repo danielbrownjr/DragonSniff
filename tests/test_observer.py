@@ -36,7 +36,7 @@ class ObserverTests(TestCase):
             [snapshot["http"][path]["state"] for path in snapshot["http"]],
             ["available", "available", "available"],
         )
-        self.assertEqual(snapshot["sse"]["events"], 2)
+        self.assertEqual(snapshot["sse"]["events"], 1)
         self.assertEqual(snapshot["limits"]["device_connection_limit"], 2)
         self.assertEqual(client.budget.active, 0)
         self.assertEqual(observer.snapshot()["session_state"], "stopped")
@@ -93,3 +93,58 @@ class ObserverTests(TestCase):
 
         self.assertEqual(observer.client.budget.active, 0)
         self.assertFalse(any(thread.name.startswith("dragonsniff-sse-") for thread in threading.enumerate()))
+
+    def test_stop_session_during_active_sse_read_completes_cleanup(self) -> None:
+        with DeviceFixture({"quiet_seconds": 0.8}) as fixture:
+            observer = Observer(parse_target(fixture.target))
+            observer.start()
+            wait_until(lambda: observer.snapshot()["sse"]["state"] == "open")
+
+            completed = observer.stop(timeout=1.0)
+
+        self.assertTrue(completed)
+        self.assertEqual(observer.snapshot()["session_state"], "stopped")
+        self.assertEqual(observer.client.budget.active, 0)
+        self.assertFalse(any(
+            thread.name.startswith("dragonsniff-") for thread in threading.enumerate()
+        ))
+
+    def test_stop_session_during_sse_connect_stays_stopping_until_cleanup(self) -> None:
+        with DeviceFixture({"events_connect_delay": 0.35}) as fixture:
+            observer = Observer(parse_target(fixture.target))
+            observer.start()
+            wait_until(lambda: observer.snapshot()["sse"]["state"] == "connecting")
+
+            completed = observer.stop(timeout=0.05)
+            self.assertFalse(completed)
+            self.assertEqual(observer.snapshot()["session_state"], "stopping")
+            self.assertFalse(observer.reconnect_events())
+            self.assertFalse(observer.refresh())
+            wait_until(lambda: observer.snapshot()["session_state"] == "stopped")
+
+        self.assertEqual(observer.client.budget.active, 0)
+        self.assertFalse(any(
+            thread.name.startswith("dragonsniff-") for thread in threading.enumerate()
+        ))
+
+    def test_stop_session_during_json_refresh_stays_stopping_until_cleanup(self) -> None:
+        with DeviceFixture() as fixture:
+            observer = Observer(parse_target(fixture.target))
+            observer.start()
+            wait_until(lambda: observer.snapshot()["sse"]["state"] == "closed")
+            fixture.server.config["json_delay_seconds"] = {"/api/v2/info": 0.35}  # type: ignore[attr-defined]
+            self.assertTrue(observer.refresh())
+            wait_until(
+                lambda: observer.snapshot()["http"]["/api/v2/info"]["state"] == "requesting"
+            )
+
+            completed = observer.stop(timeout=0.05)
+            self.assertFalse(completed)
+            self.assertEqual(observer.snapshot()["session_state"], "stopping")
+            self.assertFalse(observer.refresh())
+            wait_until(lambda: observer.snapshot()["session_state"] == "stopped")
+
+        self.assertEqual(observer.client.budget.active, 0)
+        self.assertFalse(any(
+            thread.name.startswith("dragonsniff-") for thread in threading.enumerate()
+        ))

@@ -126,11 +126,13 @@ function render(snapshot) {
   text("#eventParsed", event ? pretty(event.parsed, event.data || "No parsed data") : "No event");
   text("#eventRaw", event?.raw_payload || "No event");
   const active = !["idle", "stopped"].includes(snapshot.session_state);
-  const streamActive = ["connecting", "open"].includes(sse.state);
-  document.querySelector("#refreshButton").disabled = !active;
-  document.querySelector("#reconnectButton").disabled = !active;
+  const stopping = snapshot.session_state === "stopping";
+  const streamActive = !stopping && ["connecting", "open"].includes(sse.state);
+  document.querySelector("#connectForm button[type='submit']").disabled = stopping;
+  document.querySelector("#refreshButton").disabled = !active || stopping;
+  document.querySelector("#reconnectButton").disabled = !active || stopping;
   document.querySelector("#stopEventsButton").disabled = !streamActive;
-  document.querySelector("#stopButton").disabled = !active;
+  document.querySelector("#stopButton").disabled = !active || stopping;
 }
 
 async function update() {

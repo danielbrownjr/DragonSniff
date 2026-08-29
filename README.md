@@ -44,6 +44,8 @@ If a feature would let DragonSniff become part of a device's safety or control b
 
 DragonSniff uses a small local host service between the browser and the device. The service binds only to `127.0.0.1`, makes the fixed read-only Dragon API requests, records their raw results, and serves the application UI. The browser never connects to the Dragon directly, so product firmware does not need developer-tool CORS behavior.
 
+The local service accepts only its expected `127.0.0.1` or `localhost` Host and active port. Browser POST requests must carry the matching local Origin, and every local JSON POST must use `Content-Type: application/json`; DragonSniff does not enable CORS. An omitted Origin is accepted for deliberate non-browser tooling, which must still supply the expected Host and JSON media type.
+
 ```text
 Dragon device -- HTTP API and optional SSE --> local Python service --> browser UI
 ```
@@ -57,7 +59,7 @@ Only these device requests exist:
 - `GET /api/v2/health`
 - `GET /api/v2/events`
 
-There is no generic device proxy and no device mutation route. Raw payloads are first-class evidence. Parsed views never discard fields that DragonSniff does not recognize.
+There is no generic device proxy and no device mutation route. Raw payloads are first-class evidence. Parsed views never discard fields that DragonSniff does not recognize, and valid JSON error bodies retain both their exact raw text and parsed object.
 
 ## Run the first sniff
 
@@ -76,9 +78,9 @@ Then open exactly `http://127.0.0.1:8765` in a browser, enter an authorized loca
 dragonsniff --target dragonbreath.local
 ```
 
-Use **Refresh JSON endpoints** for another serialized pass over info, state, and health. **Stop event stream** intentionally closes only SSE while leaving the observation session active. **Reconnect event stream** starts one new stream after stopping any current one. DragonSniff does not automatically retry a failed SSE stream in V1; that keeps failure evidence clear and avoids accidental churn. **Stop session** closes the stream and ends the local session. **Bag evidence as JSONL** downloads every retained lifecycle record in arrival order.
+Use **Refresh JSON endpoints** for another serialized pass over info, state, and health. **Stop event stream** intentionally closes only SSE while leaving the observation session active. **Reconnect event stream** starts one new stream after stopping any current one. DragonSniff does not automatically retry a failed SSE stream in V1; that keeps failure evidence clear and avoids accidental churn. **Stop session** begins bounded cleanup and reports `stopping` until every worker and device-connection permit has been reclaimed; reconnect and replacement sessions remain blocked during that interval. **Bag evidence as JSONL** downloads every retained lifecycle record in arrival order.
 
-SSE has a five-second connection-establishment timeout but no application-level inactivity timeout after the stream opens. A future Dragon may have a valid quiet stream. Explicit Stop/Reconnect and real network errors still end the connection; silence alone does not.
+SSE has a five-second connection-establishment timeout but no application-level inactivity timeout after the stream opens. A future Dragon may have a valid quiet stream. Explicit Stop/Reconnect and real network errors still end the connection; silence alone does not. Comment-only keepalives remain diagnostic lifecycle evidence but are not counted or displayed as application events.
 
 Run the tests without installing the package:
 

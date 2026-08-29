@@ -53,7 +53,7 @@ The inspected DragonBreath implementation:
 - returns HTTP 503 with a JSON error payload when no stream slot is available
 - cleans task-backed client slots after peer disconnect or send failure
 
-The current feature branch contains additional SSE lifecycle diagnostics, but those do not define the general API contract. DragonSniff records arbitrary event names, IDs, comments, data, parse failures, connection transitions, HTTP rejection bodies, and end-of-stream without assuming DragonBreath's event vocabulary.
+The current feature branch contains additional SSE lifecycle diagnostics, but those do not define the general API contract. DragonSniff records arbitrary event names, IDs, comment-only transport blocks, data, parse failures, connection transitions, HTTP rejection bodies, and end-of-stream without assuming DragonBreath's event vocabulary. Comment-only blocks are retained as lifecycle evidence rather than dispatched or counted as application events.
 
 ## Error and availability handling
 
@@ -67,4 +67,4 @@ The products do not expose browser CORS headers as a common contract, and they s
 
 The backend has fixed read-only device routes, two device-connection permits, bounded bodies/events/session history, and no cloud or discovery behavior. The two permits are DragonSniff's own conservative resource budget and do not mirror or depend on DragonBreath's current two-client SSE cap. Its recorder and client lifecycle are separate from the UI so the future bounded churn runner can reuse them without browser tabs.
 
-SSE connection establishment is bounded to five seconds. Once established, a stream has no DragonSniff application-level inactivity timeout: SSE permits valid quiet streams, and DragonBreath's current two-second telemetry cadence is not assumed to be a family-wide contract. Explicit Stop or Reconnect closes the socket; transport failures remain recorded. DragonSniff does not automatically reconnect.
+SSE connection establishment is bounded to five seconds. Once established, a stream has no DragonSniff application-level inactivity timeout: SSE permits valid quiet streams, and DragonBreath's current two-second telemetry cadence is not assumed to be a family-wide contract. Explicit Stop or Reconnect closes the socket; transport failures remain recorded as errors unless the stream-specific stop condition is set. DragonSniff does not automatically reconnect.

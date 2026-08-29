@@ -14,6 +14,13 @@ from .target import TargetValidationError, parse_target
 
 
 MAX_LOCAL_REQUEST_BYTES = 16_384
+LOCAL_POST_PATHS = {
+    "/local/v1/session/start",
+    "/local/v1/session/stop",
+    "/local/v1/session/refresh",
+    "/local/v1/session/reconnect-events",
+    "/local/v1/session/stop-events",
+}
 STATIC_FILES = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/payload.js": ("payload.js", "text/javascript; charset=utf-8"),
@@ -31,19 +38,20 @@ class SessionManager:
         target = parse_target(target_value)
         with self._lock:
             previous = self._observer
-            observer = Observer(target)
+        if previous is not None and not previous.stop():
+            raise RuntimeError("the previous observation session is still stopping")
+        observer = Observer(target)
+        with self._lock:
             self._observer = observer
-        if previous is not None:
-            previous.stop()
         observer.start()
         return observer.snapshot()
 
-    def stop(self) -> dict[str, Any]:
+    def stop(self) -> tuple[bool, dict[str, Any]]:
         observer = self.current()
         if observer is None:
-            return self.empty_snapshot()
-        observer.stop()
-        return observer.snapshot()
+            return True, self.empty_snapshot()
+        completed = observer.stop()
+        return completed, observer.snapshot()
 
     def refresh(self) -> tuple[bool, dict[str, Any]]:
         observer = self.current()
@@ -111,6 +119,8 @@ class DragonSniffHandler(BaseHTTPRequestHandler):
         print(f"local {self.address_string()} - {format % args}")
 
     def do_GET(self) -> None:
+        if not self._validate_host():
+            return
         path = urlsplit(self.path).path
         if path in STATIC_FILES:
             name, content_type = STATIC_FILES[path]
@@ -131,6 +141,15 @@ class DragonSniffHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlsplit(self.path).path
+        if not self._validate_host():
+            return
+        if path not in LOCAL_POST_PATHS:
+            self._send_json(404, {"error": "not_found"})
+            return
+        if not self._validate_origin():
+            return
+        if not self._validate_json_content_type():
+            return
         try:
             body = self._read_json_body()
             if path == "/local/v1/session/start":
@@ -140,7 +159,8 @@ class DragonSniffHandler(BaseHTTPRequestHandler):
                 result = self.manager.start(target)
                 self._send_json(202, result)
             elif path == "/local/v1/session/stop":
-                self._send_json(200, self.manager.stop())
+                completed, result = self.manager.stop()
+                self._send_json(200 if completed else 202, result)
             elif path == "/local/v1/session/refresh":
                 started, result = self.manager.refresh()
                 self._send_json(202 if started else 409, result)
@@ -154,6 +174,40 @@ class DragonSniffHandler(BaseHTTPRequestHandler):
                 self._send_json(404, {"error": "not_found"})
         except (TargetValidationError, ValueError, RuntimeError) as exc:
             self._send_json(400, {"error": "invalid_request", "message": str(exc)})
+
+    def _allowed_authorities(self) -> set[str]:
+        port = self.server.server_port
+        authorities = {f"127.0.0.1:{port}", f"localhost:{port}"}
+        if port == 80:
+            authorities.update({"127.0.0.1", "localhost"})
+        return authorities
+
+    def _validate_host(self) -> bool:
+        authority = self.headers.get("Host", "").strip().lower()
+        if authority not in self._allowed_authorities():
+            self._send_json(403, {"error": "forbidden", "message": "unexpected Host"})
+            return False
+        return True
+
+    def _validate_origin(self) -> bool:
+        origin = self.headers.get("Origin")
+        if origin is None:
+            return True
+        authority = self.headers.get("Host", "").strip().lower()
+        if origin.strip().lower() != f"http://{authority}":
+            self._send_json(403, {"error": "forbidden", "message": "unexpected Origin"})
+            return False
+        return True
+
+    def _validate_json_content_type(self) -> bool:
+        media_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+        if media_type != "application/json":
+            self._send_json(
+                415,
+                {"error": "unsupported_media_type", "message": "Content-Type must be application/json"},
+            )
+            return False
+        return True
 
     def _read_json_body(self) -> dict[str, Any]:
         raw_length = self.headers.get("Content-Length", "0")
@@ -212,5 +266,5 @@ class DragonSniffServer(HTTPServer):
     def server_close(self) -> None:
         observer = self.session_manager.current()
         if observer is not None:
-            observer.stop()
+            observer.stop(timeout=6.0)
         super().server_close()

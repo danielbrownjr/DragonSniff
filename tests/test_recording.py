@@ -35,4 +35,3 @@ class RecordingTests(TestCase):
         recorder.append("sample", payload=payload)
         payload["nested"].append(2)
         self.assertEqual(recorder.snapshot()[0]["payload"], {"nested": [1]})
-

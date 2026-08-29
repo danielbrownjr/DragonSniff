@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from http.client import HTTPException
 import json
 import socket
 from threading import BoundedSemaphore, Event, Lock
@@ -74,6 +75,13 @@ def _decode(body: bytes) -> tuple[str, str | None]:
         return body.decode("utf-8", errors="replace"), str(exc)
 
 
+def _parse_json(raw: str) -> tuple[Any, str | None]:
+    try:
+        return json.loads(raw), None
+    except json.JSONDecodeError as exc:
+        return None, str(exc)
+
+
 def _response_socket(response: Any) -> socket.socket | None:
     """Return urllib's underlying socket when running on the supported CPython stack."""
 
@@ -143,12 +151,7 @@ class DragonClient:
                     headers = _headers(response)
                     body = _read_bounded(response, self.max_response_bytes)
             raw, decode_error = _decode(body)
-            parsed: Any = None
-            parse_error: str | None = None
-            try:
-                parsed = json.loads(raw)
-            except json.JSONDecodeError as exc:
-                parse_error = str(exc)
+            parsed, parse_error = _parse_json(raw)
             elapsed_ms = (time.monotonic_ns() - started) / 1_000_000
             result = {
                 "request_id": request_id,
@@ -170,6 +173,10 @@ class DragonClient:
             if too_large:
                 body = body[: self.max_response_bytes]
             raw, decode_error = _decode(body)
+            parsed, parse_error = _parse_json(raw)
+            if too_large:
+                parsed = None
+                parse_error = "response too large"
             result = {
                 "request_id": request_id,
                 "endpoint": path,
@@ -177,9 +184,9 @@ class DragonClient:
                 "elapsed_ms": round((time.monotonic_ns() - started) / 1_000_000, 3),
                 "headers": {name.lower(): value for name, value in exc.headers.items()},
                 "raw_payload": raw,
-                "parsed": None,
+                "parsed": parsed,
                 "decode_error": decode_error,
-                "parse_error": "response too large" if too_large else None,
+                "parse_error": parse_error,
                 "ok": False,
             }
             self.recorder.append("http_response", **result)
@@ -208,7 +215,7 @@ class DragonClient:
         started = time.monotonic_ns()
         self.recorder.append("sse_connecting", request_id=request_id, endpoint=path)
         on_state("connecting", {"request_id": request_id})
-        exit_reason = "stopped"
+        exit_reason = "error"
         try:
             with self.budget.lease():
                 try:
@@ -229,6 +236,10 @@ class DragonClient:
                     self.recorder.append("sse_unavailable", **details)
                     on_state("unavailable", details)
                     exit_reason = "unavailable"
+                    return
+                if stop.is_set():
+                    response.close()
+                    exit_reason = "stopped"
                     return
                 with response:
                     stream_socket = _response_socket(response)
@@ -252,14 +263,21 @@ class DragonClient:
                     for event in self._iter_sse(response, stop):
                         if stop.is_set():
                             break
-                        recorded = self.recorder.append("sse_event", request_id=request_id, **event)
-                        on_event(recorded)
+                        dispatch = event.pop("dispatch")
+                        comment_only = event.pop("comment_only")
+                        kind = "sse_event" if dispatch else (
+                            "sse_comment" if comment_only else "sse_ignored"
+                        )
+                        recorded = self.recorder.append(kind, request_id=request_id, **event)
+                        if dispatch:
+                            on_event(recorded)
                     exit_reason = "stopped" if stop.is_set() else "end_of_stream"
         except (
             OSError,
             URLError,
             TimeoutError,
             ResponseTooLargeError,
+            HTTPException,
             socket.timeout,
             ValueError,
             AttributeError,
@@ -353,4 +371,6 @@ class DragonClient:
             "data": data,
             "parsed": parsed,
             "parse_error": parse_error,
+            "dispatch": bool(data_lines),
+            "comment_only": bool(raw_lines) and all(line.startswith(":") for line in raw_lines),
         }

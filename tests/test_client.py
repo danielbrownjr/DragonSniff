@@ -1,4 +1,5 @@
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.client import IncompleteRead
 from threading import Event, Thread
 import time
 from unittest import TestCase
@@ -15,6 +16,8 @@ class FixtureHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         config = self.server.config  # type: ignore[attr-defined]
         if self.path == "/api/v2/events":
+            if config.get("events_connect_delay"):
+                time.sleep(config["events_connect_delay"])
             if config.get("events_status", 200) != 200:
                 body = b'{"error":"busy","future_detail":true}'
                 self.send_response(config["events_status"])
@@ -34,7 +37,11 @@ class FixtureHandler(BaseHTTPRequestHandler):
             self.wfile.flush()
             return
         body = config.get(self.path, b'{"api_version":2}')
-        self.send_response(200)
+        delays = config.get("json_delay_seconds", {})
+        if self.path in delays:
+            time.sleep(delays[self.path])
+        statuses = config.get("json_status", {})
+        self.send_response(statuses.get(self.path, 200))
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -84,6 +91,20 @@ class BlockingTeardownResponse:
         self.closed.set()
 
 
+class IncompleteReadResponse:
+    status = 200
+    headers = {"Content-Type": "text/event-stream"}
+
+    def __enter__(self) -> "IncompleteReadResponse":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        pass
+
+    def readline(self, limit: int) -> bytes:
+        raise IncompleteRead(b"partial")
+
+
 class ClientTests(TestCase):
     def test_json_is_schema_free_and_raw_payload_is_preserved(self) -> None:
         raw = b'{"api_version":2,"product_specific":{"future":[1,2]},"optional":null}'
@@ -125,6 +146,26 @@ class ClientTests(TestCase):
         self.assertEqual(states[-1][1]["reason"], "unavailable")
         self.assertEqual(client.budget.active, 0)
 
+    def test_json_http_errors_preserve_raw_and_parse_valid_bodies(self) -> None:
+        raw = b'{"error":"missing","future_detail":{"value":true}}'
+        config = {
+            "/api/v2/info": raw,
+            "/api/v2/state": b"not-json",
+            "json_status": {"/api/v2/info": 404, "/api/v2/state": 503},
+        }
+        with DeviceFixture(config) as fixture:
+            recorder = SessionRecorder()
+            client = DragonClient(parse_target(fixture.target), recorder)
+            valid = client.fetch_json("/api/v2/info")
+            invalid = client.fetch_json("/api/v2/state")
+
+        self.assertEqual(valid["raw_payload"], raw.decode())
+        self.assertEqual(valid["parsed"], {"error": "missing", "future_detail": {"value": True}})
+        self.assertIsNone(valid["parse_error"])
+        self.assertEqual(invalid["raw_payload"], "not-json")
+        self.assertIsNone(invalid["parsed"])
+        self.assertIsNotNone(invalid["parse_error"])
+
     def test_sse_lifecycle_parses_events_and_preserves_raw_blocks(self) -> None:
         with DeviceFixture() as fixture:
             recorder = SessionRecorder()
@@ -134,10 +175,13 @@ class ClientTests(TestCase):
             client.stream_events(Event(), events.append, lambda state, data: states.append(state))
 
         self.assertEqual(states, ["connecting", "open", "closed"])
-        self.assertEqual(events[1]["event"], "telemetry")
-        self.assertEqual(events[1]["event_id"], "abc")
-        self.assertEqual(events[1]["parsed"], {"known": 1, "unknown": 2})
-        self.assertEqual(events[1]["raw_payload"], 'event: telemetry\nid: abc\ndata: {"known":1,"unknown":2}\n\n')
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["event"], "telemetry")
+        self.assertEqual(events[0]["event_id"], "abc")
+        self.assertEqual(events[0]["parsed"], {"known": 1, "unknown": 2})
+        self.assertEqual(events[0]["raw_payload"], 'event: telemetry\nid: abc\ndata: {"known":1,"unknown":2}\n\n')
+        comment = next(record for record in recorder.snapshot() if record["kind"] == "sse_comment")
+        self.assertEqual(comment["raw_payload"], ": connected\n\n")
         self.assertEqual(client.budget.active, 0)
 
     def test_quiet_sse_stream_has_no_application_inactivity_timeout(self) -> None:
@@ -229,6 +273,30 @@ class ClientTests(TestCase):
         error = next(record for record in recorder.snapshot() if record["kind"] == "sse_error")
         self.assertIn("AttributeError", error["error"])
         self.assertEqual(states[-1][1]["reason"], "error")
+        self.assertEqual(client.budget.active, 0)
+
+    def test_incomplete_read_is_recorded_as_error_without_escaping(self) -> None:
+        recorder = SessionRecorder()
+        client = DragonClient(
+            parse_target("dragon.local"),
+            recorder,
+            opener=lambda request, timeout: IncompleteReadResponse(),
+        )
+        states: list[tuple[str, dict[str, object]]] = []
+
+        client.stream_events(
+            Event(),
+            lambda event: None,
+            lambda state, details: states.append((state, details)),
+        )
+
+        error = next(record for record in recorder.snapshot() if record["kind"] == "sse_error")
+        self.assertIn("IncompleteRead", error["error"])
+        self.assertEqual(states[-1][1]["reason"], "error")
+        self.assertFalse(any(
+            record["kind"] == "sse_closed" and record["reason"] == "stopped"
+            for record in recorder.snapshot()
+        ))
         self.assertEqual(client.budget.active, 0)
 
     def test_connection_budget_reports_active_use_and_releases(self) -> None:

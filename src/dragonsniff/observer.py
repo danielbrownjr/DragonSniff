@@ -34,6 +34,7 @@ class Observer:
         self._stream_thread: Thread | None = None
         self._refresh_thread: Thread | None = None
         self._generation = 0
+        self._stop_recorded = False
         self._state: dict[str, Any] = {
             "session_state": "new",
             "target": target.base_url,
@@ -47,6 +48,7 @@ class Observer:
                 return
             self._state["session_state"] = "starting"
             self._session_stop.clear()
+            self._stop_recorded = False
         self.recorder.append(
             "session_started",
             target=self.target.base_url,
@@ -56,6 +58,8 @@ class Observer:
 
     def refresh(self, *, connect_events: bool = False) -> bool:
         with self._lock:
+            if self._state["session_state"] in {"stopping", "stopped"}:
+                return False
             if self._refresh_thread is not None and self._refresh_thread.is_alive():
                 return False
             thread = Thread(
@@ -136,15 +140,19 @@ class Observer:
             self._state["sse"]["state"] = state
             self._state["sse"]["close_details" if closing else "details"] = deepcopy(details)
 
-    def stop_events(self) -> bool:
+    def stop_events(self, timeout: float = 2.0) -> bool:
         with self._lock:
             thread = self._stream_thread
             stream_stop = self._stream_stop
         if thread is None or stream_stop is None or not thread.is_alive():
+            with self._lock:
+                if self._stream_thread is thread:
+                    self._stream_thread = None
+                    self._stream_stop = None
             return True
         stream_stop.set()
         self.client.close_stream()
-        thread.join(timeout=2)
+        thread.join(timeout=max(0.0, timeout))
         if thread.is_alive():
             details = {"reason": "stop_timeout", "generation": self._generation}
             self.recorder.append("sse_stop_timeout", **details)
@@ -156,21 +164,42 @@ class Observer:
                 self._stream_stop = None
         return True
 
-    def stop(self) -> None:
+    def stop(self, timeout: float = 2.0) -> bool:
+        deadline = time.monotonic() + max(0.0, timeout)
         with self._lock:
             if self._state["session_state"] == "stopped":
-                return
+                return True
             self._state["session_state"] = "stopping"
         self._session_stop.set()
-        self.stop_events()
+        self.stop_events(timeout=max(0.0, deadline - time.monotonic()))
         if self._refresh_thread is not None and self._refresh_thread.is_alive():
-            self._refresh_thread.join(timeout=2)
+            self._refresh_thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        return self._finish_stop_if_complete()
+
+    def _finish_stop_if_complete(self) -> bool:
         with self._lock:
+            if self._state["session_state"] == "stopped":
+                return True
+            if self._state["session_state"] != "stopping":
+                return False
+            workers = (self._stream_thread, self._refresh_thread)
+            if any(thread is not None and thread.is_alive() for thread in workers):
+                return False
+            if self.client.budget.active != 0:
+                return False
+            self._stream_thread = None
+            self._stream_stop = None
+            self._refresh_thread = None
             self._state["session_state"] = "stopped"
             self._state["sse"]["state"] = "closed"
-        self.recorder.append("session_stopped", target=self.target.base_url)
+            record_stop = not self._stop_recorded
+            self._stop_recorded = True
+        if record_stop:
+            self.recorder.append("session_stopped", target=self.target.base_url)
+        return True
 
     def snapshot(self, recent_records: int = 100) -> dict[str, Any]:
+        self._finish_stop_if_complete()
         with self._lock:
             state = deepcopy(self._state)
         records = self.recorder.snapshot()
@@ -184,7 +213,7 @@ class Observer:
         )
         return state
 
-    def limits(self) -> dict[str, int]:
+    def limits(self) -> dict[str, Any]:
         return {
             "device_connection_limit": self.client.budget.limit,
             "active_device_connections": self.client.budget.active,

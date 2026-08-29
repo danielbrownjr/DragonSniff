@@ -50,4 +50,3 @@ def parse_target(value: str) -> DeviceTarget:
         base_url=f"{parsed.scheme.lower()}://{authority}",
         display_address=authority,
     )
-

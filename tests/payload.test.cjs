@@ -21,6 +21,18 @@ test("raw copy preserves the original response exactly", () => {
   assert.equal(payloadText({raw_payload: raw}, "raw"), raw);
 });
 
+test("parsed HTTP error objects remain copyable instead of becoming null", () => {
+  const result = {parsed: {error: "missing", future_detail: true}, parse_error: null};
+  assert.equal(
+    payloadText(result, "parsed"),
+    '{\n  "error": "missing",\n  "future_detail": true\n}',
+  );
+});
+
+test("invalid JSON error bodies do not enable parsed copy", () => {
+  assert.equal(payloadText({parsed: null, parse_error: "invalid JSON"}, "parsed"), null);
+});
+
 test("malformed or absent representations are not copyable", () => {
   assert.equal(payloadText({parsed: null, parse_error: "bad JSON"}, "parsed"), null);
   assert.equal(payloadText({}, "raw"), null);
