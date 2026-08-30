@@ -9,6 +9,7 @@ from threading import Lock
 from typing import Any
 from urllib.parse import urlsplit
 
+from .churn import ChurnConfig, ChurnRunner
 from .observer import Observer
 from .target import TargetValidationError, parse_target
 
@@ -20,6 +21,8 @@ LOCAL_POST_PATHS = {
     "/local/v1/session/refresh",
     "/local/v1/session/reconnect-events",
     "/local/v1/session/stop-events",
+    "/local/v1/churn/start",
+    "/local/v1/churn/stop",
 }
 STATIC_FILES = {
     "/": ("index.html", "text/html; charset=utf-8"),
@@ -32,17 +35,22 @@ STATIC_FILES = {
 class SessionManager:
     def __init__(self) -> None:
         self._observer: Observer | None = None
+        self._churn: ChurnRunner | None = None
         self._lock = Lock()
 
     def start(self, target_value: str) -> dict[str, Any]:
         target = parse_target(target_value)
         with self._lock:
             previous = self._observer
+            churn = self._churn
+        if churn is not None and churn.snapshot()["state"] in {"running", "stopping"}:
+            raise RuntimeError("a churn run is active; stop it before normal observation")
         if previous is not None and not previous.stop():
             raise RuntimeError("the previous observation session is still stopping")
         observer = Observer(target)
         with self._lock:
             self._observer = observer
+            self._churn = None
         observer.start()
         return observer.snapshot()
 
@@ -74,21 +82,111 @@ class SessionManager:
         stopped = observer.stop_events()
         return stopped, observer.snapshot()
 
+    def start_churn(
+        self, target_value: str, configuration: object
+    ) -> dict[str, Any]:
+        target = parse_target(target_value)
+        config = ChurnConfig.from_value(configuration)
+        with self._lock:
+            observer = self._observer
+            previous = self._churn
+        if observer is not None and observer.snapshot()["session_state"] != "stopped":
+            raise RuntimeError("normal observation is active; stop it before starting churn")
+        if previous is not None and previous.snapshot()["state"] in {"running", "stopping"}:
+            raise RuntimeError("a churn run is already active")
+        churn = ChurnRunner(target, config)
+        with self._lock:
+            self._observer = None
+            self._churn = churn
+        churn.start()
+        return self.snapshot()
+
+    def stop_churn(self) -> tuple[bool, dict[str, Any]]:
+        churn = self.current_churn()
+        if churn is None:
+            raise RuntimeError("no churn run is active")
+        completed = churn.stop()
+        return completed, self.snapshot()
+
     def current(self) -> Observer | None:
         with self._lock:
             return self._observer
 
+    def current_churn(self) -> ChurnRunner | None:
+        with self._lock:
+            return self._churn
+
     def snapshot(self) -> dict[str, Any]:
         observer = self.current()
-        return observer.snapshot() if observer is not None else self.empty_snapshot()
+        churn = self.current_churn()
+        if observer is not None:
+            result = observer.snapshot()
+            result["active_mode"] = "observation"
+            result["churn"] = self.empty_churn_snapshot()
+            return result
+        result = self.empty_snapshot()
+        if churn is not None:
+            result["active_mode"] = "churn"
+            result["churn"] = churn.snapshot()
+            result["target"] = result["churn"]["target"]
+            result["recorder"] = result["churn"]["recorder"]
+            result["recent_records"] = result["churn"]["recent_records"]
+            result["limits"]["active_device_connections"] = result["churn"][
+                "active_device_connections"
+            ]
+            result["limits"]["device_connection_limit"] = result["churn"][
+                "device_connection_limit"
+            ]
+        return result
 
     def export_jsonl(self) -> str:
         observer = self.current()
+        churn = self.current_churn()
+        if churn is not None:
+            return churn.recorder.export_jsonl()
         return observer.recorder.export_jsonl() if observer is not None else ""
+
+    @staticmethod
+    def empty_churn_snapshot() -> dict[str, Any]:
+        config = ChurnConfig()
+        return {
+            "state": "idle",
+            "run_id": None,
+            "target": None,
+            "configuration": config.snapshot(),
+            "bounds": config.bounds(),
+            "current_cycle": 0,
+            "total_cycles": config.cycles,
+            "active_churn_connections": 0,
+            "active_device_connections": 0,
+            "device_connection_limit": 2,
+            "successful_connections": 0,
+            "rejected_connections": 0,
+            "http_failures": 0,
+            "transport_failures": 0,
+            "local_resource_failures": 0,
+            "remote_eof": 0,
+            "events_observed": 0,
+            "parse_failures": 0,
+            "boot_id_changed": False,
+            "boot_id_changes": [],
+            "initial_boot_id": None,
+            "latest_boot_id": None,
+            "latest_health": None,
+            "cycles": [],
+            "cleanup_complete": True,
+            "failure": None,
+            "start_timestamp": None,
+            "end_timestamp": None,
+            "elapsed_ms": 0.0,
+            "recorder": {"records": 0, "max_records": 2_000, "dropped_records": 0},
+            "recent_records": [],
+        }
 
     @staticmethod
     def empty_snapshot() -> dict[str, Any]:
         return {
+            "active_mode": "idle",
             "session_state": "idle",
             "target": None,
             "http": {},
@@ -105,6 +203,7 @@ class SessionManager:
                 "sse_inactivity_timeout": "disabled",
             },
             "recent_records": [],
+            "churn": SessionManager.empty_churn_snapshot(),
         }
 
 
@@ -170,6 +269,15 @@ class DragonSniffHandler(BaseHTTPRequestHandler):
             elif path == "/local/v1/session/stop-events":
                 stopped, result = self.manager.stop_events()
                 self._send_json(200 if stopped else 409, result)
+            elif path == "/local/v1/churn/start":
+                target = body.get("target")
+                if not isinstance(target, str):
+                    raise ValueError("target must be a string")
+                result = self.manager.start_churn(target, body.get("configuration", {}))
+                self._send_json(202, result)
+            elif path == "/local/v1/churn/stop":
+                completed, result = self.manager.stop_churn()
+                self._send_json(200 if completed else 202, result)
             else:
                 self._send_json(404, {"error": "not_found"})
         except (TargetValidationError, ValueError, RuntimeError) as exc:
@@ -265,6 +373,9 @@ class DragonSniffServer(HTTPServer):
 
     def server_close(self) -> None:
         observer = self.session_manager.current()
+        churn = self.session_manager.current_churn()
         if observer is not None:
             observer.stop(timeout=6.0)
+        if churn is not None:
+            churn.stop(timeout=6.0)
         super().server_close()

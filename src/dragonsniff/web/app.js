@@ -6,6 +6,7 @@ const targetInput = document.querySelector("#target");
 const endpointPayloads = new Map();
 const payloadTools = window.DragonSniffPayload;
 let requestInFlight = false;
+let currentSnapshot = null;
 
 function text(selector, value) {
   document.querySelector(selector).textContent = String(value);
@@ -72,6 +73,24 @@ async function copyPayload(button) {
   }
 }
 
+async function copyChurn(kind, button) {
+  const churn = currentSnapshot?.churn;
+  const value = kind === "summary"
+    ? payloadTools.churnSummaryText(churn)
+    : payloadTools.churnHealthText(churn);
+  if (value === null) {
+    copyFeedback(button, "Nothing to copy", true);
+    return;
+  }
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error("clipboard unavailable");
+    await navigator.clipboard.writeText(value);
+    copyFeedback(button, "Copied");
+  } catch (error) {
+    copyFeedback(button, "Copy failed", true);
+  }
+}
+
 function renderLimits(limits) {
   const list = document.querySelector("#limits");
   list.replaceChildren();
@@ -109,10 +128,55 @@ function renderTimeline(records) {
   });
 }
 
+function renderChurn(snapshot) {
+  const churn = snapshot.churn || {};
+  const state = churn.state || "idle";
+  const running = state === "running";
+  const stopping = state === "stopping";
+  const normalActive = !["idle", "stopped"].includes(snapshot.session_state);
+  currentSnapshot = snapshot;
+  text("#churnState", state);
+  document.querySelector("#churnState").dataset.status = state;
+  text("#churnProgress", `${churn.current_cycle || 0} / ${churn.total_cycles || churn.configuration?.cycles || 0}`);
+  text("#churnActive", `${churn.active_churn_connections || 0} / 1`);
+  text("#churnSuccess", churn.successful_connections || 0);
+  text("#churnRejected", churn.rejected_connections || 0);
+  text("#churnTransportFailures", (churn.transport_failures || 0) + (churn.local_resource_failures || 0));
+  text("#churnEvents", churn.events_observed || 0);
+  text("#churnElapsed", `${((churn.elapsed_ms || 0) / 1000).toFixed(1)} s`);
+  const bootStatus = churn.boot_id_changed
+    ? `changed: ${churn.initial_boot_id || "unknown"} -> ${churn.latest_boot_id || "unknown"}`
+    : (churn.latest_boot_id || "not observed");
+  text("#churnBoot", bootStatus);
+  document.querySelector("#churnBoot").dataset.status = churn.boot_id_changed ? "error" : (churn.latest_boot_id ? "available" : "idle");
+  const health = churn.latest_health;
+  const healthSignal = churn.boot_id_changed
+    ? "Important evidence: the observed boot ID changed during this run. No cause is inferred."
+    : health?.status === 404
+      ? "The health endpoint is unavailable; lifecycle exercise continues without optional health interpretation."
+      : health
+        ? `Observed optional health fields: ${Object.keys(health.observed || {}).join(", ") || "none"}. Raw evidence is retained.`
+        : "No health observation yet.";
+  text("#churnHealthSignal", healthSignal);
+  text("#churnHealth", churn.latest_health ? pretty(churn.latest_health) : "No health observation");
+  text("#churnCyclesEvidence", churn.cycles?.length ? pretty(churn.cycles) : "No cycles recorded");
+
+  const inputs = document.querySelectorAll("#churnForm input");
+  inputs.forEach((input) => { input.disabled = running || stopping; });
+  document.querySelector("#churnStartButton").disabled = running || stopping || normalActive;
+  document.querySelector("#churnStopButton").disabled = !running;
+  document.querySelector("#copyChurnSummary").disabled = payloadTools.churnSummaryText(churn) === null;
+  document.querySelector("#copyChurnHealth").disabled = payloadTools.churnHealthText(churn) === null;
+}
+
 function render(snapshot) {
   const sse = snapshot.sse || {};
   const sseTiming = sse.details?.elapsed_ms === undefined ? "" : ` / ${sse.details.elapsed_ms.toFixed(1)} ms`;
-  text("#sessionBadge", snapshot.session_state || "idle");
+  const globalState = snapshot.active_mode === "churn"
+    ? (snapshot.churn?.state || "idle")
+    : (snapshot.session_state || "idle");
+  text("#sessionBadge", globalState);
+  document.querySelector("#sessionBadge").dataset.status = globalState;
   text("#targetValue", snapshot.target || "not connected");
   text("#sseState", sse.state || "not connected");
   document.querySelector("#sseState").dataset.status = sse.state || "not_connected";
@@ -127,12 +191,14 @@ function render(snapshot) {
   text("#eventRaw", event?.raw_payload || "No event");
   const active = !["idle", "stopped"].includes(snapshot.session_state);
   const stopping = snapshot.session_state === "stopping";
+  const churnActive = ["running", "stopping"].includes(snapshot.churn?.state);
   const streamActive = !stopping && ["connecting", "open"].includes(sse.state);
-  document.querySelector("#connectForm button[type='submit']").disabled = stopping;
+  document.querySelector("#connectForm button[type='submit']").disabled = stopping || churnActive;
   document.querySelector("#refreshButton").disabled = !active || stopping;
   document.querySelector("#reconnectButton").disabled = !active || stopping;
   document.querySelector("#stopEventsButton").disabled = !streamActive;
   document.querySelector("#stopButton").disabled = !active || stopping;
+  renderChurn(snapshot);
 }
 
 async function update() {
@@ -147,14 +213,14 @@ async function update() {
   }
 }
 
-async function act(path, body = {}) {
-  notice.textContent = "Working...";
+async function act(path, body = {}, statusNode = notice) {
+  statusNode.textContent = "Working...";
   try {
     const snapshot = await localRequest(path, {method: "POST", body: JSON.stringify(body)});
     render(snapshot);
-    notice.textContent = "Request accepted. Live status will update below.";
+    statusNode.textContent = "Request accepted. Live status will update below.";
   } catch (error) {
-    notice.textContent = error.message;
+    statusNode.textContent = error.message;
   }
 }
 
@@ -174,7 +240,27 @@ if (window.location.protocol === "file:") {
   document.querySelector("#reconnectButton").addEventListener("click", () => act("/local/v1/session/reconnect-events"));
   document.querySelector("#stopEventsButton").addEventListener("click", () => act("/local/v1/session/stop-events"));
   document.querySelector("#stopButton").addEventListener("click", () => act("/local/v1/session/stop"));
-  document.querySelectorAll(".copy-button").forEach((button) => {
+  const churnNotice = document.querySelector("#churnNotice");
+  document.querySelector("#churnForm").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const configuration = {
+      cycles: Number(document.querySelector("#churnCycles").value),
+      observe_seconds: Number(document.querySelector("#churnObserveSeconds").value),
+      max_events: Number(document.querySelector("#churnMaxEvents").value),
+      delay_seconds: Number(document.querySelector("#churnDelaySeconds").value),
+    };
+    act("/local/v1/churn/start", {target: targetInput.value.trim(), configuration}, churnNotice);
+  });
+  document.querySelector("#churnStopButton").addEventListener("click", () => {
+    act("/local/v1/churn/stop", {}, churnNotice);
+  });
+  document.querySelector("#copyChurnSummary").addEventListener("click", (event) => {
+    copyChurn("summary", event.currentTarget);
+  });
+  document.querySelector("#copyChurnHealth").addEventListener("click", (event) => {
+    copyChurn("health", event.currentTarget);
+  });
+  document.querySelectorAll("[data-endpoint] .copy-button").forEach((button) => {
     button.addEventListener("click", () => copyPayload(button));
   });
 

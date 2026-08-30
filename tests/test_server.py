@@ -87,6 +87,9 @@ class ServerTests(TestCase):
         self.assertEqual(html.count('data-copy-view="parsed"'), 3)
         self.assertEqual(html.count('data-copy-view="raw"'), 3)
         self.assertIn("Stop event stream", html)
+        self.assertIn("Poke it with a stick", html)
+        self.assertIn("Start bounded churn", html)
+        self.assertIn("Copy run summary", html)
 
     def test_invalid_target_is_rejected_without_starting_a_session(self) -> None:
         with LocalServerFixture() as local:
@@ -173,3 +176,123 @@ class ServerTests(TestCase):
 
         self.assertEqual(status, 202)
         self.assertEqual(json.loads(body)["session_state"], "stopping")
+
+    def test_local_api_runs_bounded_churn_and_exports_same_jsonl_evidence(self) -> None:
+        with DeviceFixture({"quiet_seconds": 0.8}) as device, LocalServerFixture() as local:
+            status, body, _ = local.request(
+                "POST",
+                "/local/v1/churn/start",
+                {
+                    "target": device.target,
+                    "configuration": {
+                        "cycles": 1,
+                        "observe_seconds": 0.25,
+                        "max_events": 5,
+                        "delay_seconds": 0.1,
+                    },
+                },
+            )
+            self.assertEqual(status, 202)
+            self.assertEqual(json.loads(body)["churn"]["state"], "running")
+            deadline = time.monotonic() + 4
+            snapshot = {}
+            while time.monotonic() < deadline:
+                _, body, _ = local.request("GET", "/local/v1/session")
+                snapshot = json.loads(body)
+                if snapshot["churn"]["state"] == "completed":
+                    break
+                time.sleep(0.01)
+            status, export, content_type = local.request(
+                "GET", "/local/v1/session/export"
+            )
+
+        self.assertEqual(snapshot["active_mode"], "churn")
+        self.assertEqual(snapshot["churn"]["successful_connections"], 1)
+        self.assertTrue(snapshot["churn"]["cleanup_complete"])
+        self.assertEqual(status, 200)
+        self.assertEqual(content_type, "application/x-ndjson; charset=utf-8")
+        records = [json.loads(line) for line in export.splitlines()]
+        self.assertTrue(any(record["kind"] == "churn_run_completed" for record in records))
+
+    def test_churn_configuration_is_validated_server_side(self) -> None:
+        with LocalServerFixture() as local:
+            invalid_values = (
+                {"cycles": 0},
+                {"cycles": 21},
+                {"observe_seconds": 0},
+                {"max_events": 0},
+                {"delay_seconds": 0},
+                {"concurrency": 2},
+            )
+            for configuration in invalid_values:
+                status, body, _ = local.request(
+                    "POST",
+                    "/local/v1/churn/start",
+                    {"target": "127.0.0.1:9", "configuration": configuration},
+                )
+                self.assertEqual(status, 400)
+                self.assertEqual(json.loads(body)["error"], "invalid_request")
+
+    def test_churn_actions_keep_host_origin_and_content_type_boundary(self) -> None:
+        with LocalServerFixture() as local:
+            port = local.server.server_port
+            payload = {
+                "target": "127.0.0.1:9",
+                "configuration": {
+                    "cycles": 1,
+                    "observe_seconds": 0.25,
+                    "max_events": 1,
+                    "delay_seconds": 0.1,
+                },
+            }
+            bad_host, host_body, _ = local.request(
+                "POST",
+                "/local/v1/churn/start",
+                payload,
+                {"Host": "attacker.example"},
+            )
+            bad_origin, origin_body, _ = local.request(
+                "POST",
+                "/local/v1/churn/start",
+                payload,
+                {"Origin": "http://attacker.example"},
+            )
+            bad_type, type_body, _ = local.request(
+                "POST",
+                "/local/v1/churn/start",
+                payload,
+                {
+                    "Origin": f"http://127.0.0.1:{port}",
+                    "Content-Type": "text/plain",
+                },
+            )
+
+        self.assertEqual(bad_host, 403)
+        self.assertEqual(json.loads(host_body)["error"], "forbidden")
+        self.assertEqual(bad_origin, 403)
+        self.assertEqual(json.loads(origin_body)["error"], "forbidden")
+        self.assertEqual(bad_type, 415)
+        self.assertEqual(json.loads(type_body)["error"], "unsupported_media_type")
+
+    def test_normal_observation_and_churn_are_mutually_exclusive(self) -> None:
+        with DeviceFixture({"quiet_seconds": 1.0}) as device, LocalServerFixture() as local:
+            started, _, _ = local.request(
+                "POST", "/local/v1/session/start", {"target": device.target}
+            )
+            rejected, body, _ = local.request(
+                "POST",
+                "/local/v1/churn/start",
+                {
+                    "target": device.target,
+                    "configuration": {
+                        "cycles": 1,
+                        "observe_seconds": 0.25,
+                        "max_events": 1,
+                        "delay_seconds": 0.1,
+                    },
+                },
+            )
+
+        self.assertEqual(started, 202)
+        self.assertEqual(rejected, 400)
+        self.assertIn("normal observation is active", json.loads(body)["message"])

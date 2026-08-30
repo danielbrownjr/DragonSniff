@@ -65,6 +65,10 @@ DragonSniff does not silently substitute polling for SSE. It fetches `/state` du
 
 The products do not expose browser CORS headers as a common contract, and they should not need to. DragonSniff therefore uses a loopback-only host backend. It allows the browser to inspect an authorized local Dragon without adding developer-tool policy or allocations to firmware.
 
-The backend has fixed read-only device routes, two device-connection permits, bounded bodies/events/session history, and no cloud or discovery behavior. The two permits are DragonSniff's own conservative resource budget and do not mirror or depend on DragonBreath's current two-client SSE cap. Its recorder and client lifecycle are separate from the UI so the future bounded churn runner can reuse them without browser tabs.
+The backend has fixed read-only device routes, two device-connection permits, bounded bodies/events/session history, and no cloud or discovery behavior. The two permits are DragonSniff's own conservative resource budget and do not mirror or depend on DragonBreath's current two-client SSE cap. Its recorder and client lifecycle are separate from the UI, and the bounded churn runner reuses them without browser tabs.
 
 SSE connection establishment is bounded to five seconds. Once established, a stream has no DragonSniff application-level inactivity timeout: SSE permits valid quiet streams, and DragonBreath's current two-second telemetry cadence is not assumed to be a family-wide contract. Explicit Stop or Reconnect closes the socket; transport failures remain recorded as errors unless the stream-specific stop condition is set. DragonSniff does not automatically reconnect.
+
+The Issue #2 churn runner reuses these same fixed routes, recorder, parser, timeout semantics, and two-permit client budget. It opens at most one churn-owned SSE connection at a time. The second permit allows a bounded health sample while that stream is open; it is not a claim about device-side stream capacity.
+
+Churn records HTTP 503 stream rejection without assuming every 503 has the same product cause. DragonBreath's current valid JSON `busy` response is preserved as one real-world example. Other HTTP statuses, invalid bodies, transport failures, remote EOF, deliberate disconnect, cancellation, and controller failures remain distinguishable evidence.

@@ -52,6 +52,48 @@
       <article class="metric"><span>Session records</span><strong id="recordCount">0</strong></article>
     </section>
 
+    <section class="card churn-card" aria-labelledby="churn-heading">
+      <div class="endpoint-heading">
+        <div>
+          <p class="eyebrow">Deliberate protocol exercise</p>
+          <h2 id="churn-heading">Poke it with a stick</h2>
+          <p>Run sequential, bounded SSE connect-observe-disconnect cycles against the Dragon address above. Normal observation and churn cannot run together.</p>
+        </div>
+        <span id="churnState" class="endpoint-state" data-status="idle">idle</span>
+      </div>
+      <form id="churnForm" class="churn-form">
+        <div class="config-grid">
+          <label>Cycles<input id="churnCycles" type="number" value="3" min="1" max="20" step="1" required></label>
+          <label>Observe seconds<input id="churnObserveSeconds" type="number" value="2" min="0.25" max="15" step="0.25" required></label>
+          <label>Event bound<input id="churnMaxEvents" type="number" value="3" min="1" max="25" step="1" required></label>
+          <label>Delay seconds<input id="churnDelaySeconds" type="number" value="0.5" min="0.1" max="5" step="0.1" required></label>
+        </div>
+        <div class="actions">
+          <button id="churnStartButton" type="submit" class="primary">Start bounded churn</button>
+          <button id="churnStopButton" type="button" disabled>Stop churn</button>
+          <button id="copyChurnSummary" type="button" class="copy-button" disabled>Copy run summary</button>
+          <button id="copyChurnHealth" type="button" class="copy-button" disabled>Copy latest raw health</button>
+          <span id="churnCopyFeedback" class="copy-feedback" role="status" aria-live="polite"></span>
+        </div>
+      </form>
+      <p id="churnNotice" class="notice" role="status" aria-live="polite"></p>
+      <div class="churn-metrics" aria-label="Churn run summary">
+        <div><span>Cycle</span><strong id="churnProgress">0 / 3</strong></div>
+        <div><span>Owned SSE</span><strong id="churnActive">0</strong></div>
+        <div><span>Connected</span><strong id="churnSuccess">0</strong></div>
+        <div><span>Rejected</span><strong id="churnRejected">0</strong></div>
+        <div><span>Transport failures</span><strong id="churnTransportFailures">0</strong></div>
+        <div><span>Events</span><strong id="churnEvents">0</strong></div>
+        <div><span>Elapsed</span><strong id="churnElapsed">0.0 s</strong></div>
+        <div><span>Boot ID</span><strong id="churnBoot">not observed</strong></div>
+      </div>
+      <p id="churnHealthSignal" class="notice">No health observation yet.</p>
+      <div class="split churn-evidence">
+        <div><h3>Latest health observation</h3><pre id="churnHealth">No health observation</pre></div>
+        <div><h3>Cycle evidence</h3><pre id="churnCyclesEvidence">No cycles recorded</pre></div>
+      </div>
+    </section>
+
     <section class="card" aria-labelledby="limits-heading">
       <h2 id="limits-heading">Observer footprint</h2>
       <p>The limits below are hard ceilings, not current device capacity.</p>

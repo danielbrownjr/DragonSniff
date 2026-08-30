@@ -32,11 +32,21 @@ class FixtureHandler(BaseHTTPRequestHandler):
             if config.get("quiet_seconds"):
                 time.sleep(config["quiet_seconds"])
                 return
-            self.wfile.write(b": connected\n\n")
-            self.wfile.write(b"event: telemetry\nid: abc\ndata: {\"known\":1,\"unknown\":2}\n\n")
-            self.wfile.flush()
+            try:
+                self.wfile.write(b": connected\n\n")
+                for index in range(config.get("event_count", 1)):
+                    self.wfile.write(
+                        f'event: telemetry\nid: {index}\ndata: {{"known":1,"unknown":2}}\n\n'.encode()
+                    )
+                self.wfile.flush()
+            except OSError:
+                pass
             return
-        body = config.get(self.path, b'{"api_version":2}')
+        if self.path == "/api/v2/health" and config.get("health_sequence"):
+            sequence = config["health_sequence"]
+            body = sequence.pop(0) if len(sequence) > 1 else sequence[0]
+        else:
+            body = config.get(self.path, b'{"api_version":2}')
         delays = config.get("json_delay_seconds", {})
         if self.path in delays:
             time.sleep(delays[self.path])
@@ -177,9 +187,9 @@ class ClientTests(TestCase):
         self.assertEqual(states, ["connecting", "open", "closed"])
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["event"], "telemetry")
-        self.assertEqual(events[0]["event_id"], "abc")
+        self.assertEqual(events[0]["event_id"], "0")
         self.assertEqual(events[0]["parsed"], {"known": 1, "unknown": 2})
-        self.assertEqual(events[0]["raw_payload"], 'event: telemetry\nid: abc\ndata: {"known":1,"unknown":2}\n\n')
+        self.assertEqual(events[0]["raw_payload"], 'event: telemetry\nid: 0\ndata: {"known":1,"unknown":2}\n\n')
         comment = next(record for record in recorder.snapshot() if record["kind"] == "sse_comment")
         self.assertEqual(comment["raw_payload"], ": connected\n\n")
         self.assertEqual(client.budget.active, 0)

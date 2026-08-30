@@ -82,6 +82,20 @@ Use **Refresh JSON endpoints** for another serialized pass over info, state, and
 
 SSE has a five-second connection-establishment timeout but no application-level inactivity timeout after the stream opens. A future Dragon may have a valid quiet stream. Explicit Stop/Reconnect and real network errors still end the connection; silence alone does not. Comment-only keepalives remain diagnostic lifecycle evidence but are not counted or displayed as application events.
 
+## Poke it with a stick
+
+The bounded churn runner deliberately repeats the read-only SSE lifecycle against the Dragon address entered in the normal connection card. Normal observation and churn are mutually exclusive in this first implementation; stop one before starting the other. Churn is sequential only: connect, observe until the duration or event bound, disconnect, verify local cleanup, sample health, wait, and repeat.
+
+The conservative defaults are three cycles, two seconds or three application events per connection, and a half-second delay. The service enforces hard bounds of 1–20 cycles, 0.25–15 seconds of observation, 1–25 events, and 0.1–5 seconds between cycles. Zero-delay storms, infinite runs, concurrency controls, arbitrary methods, and arbitrary paths are not available.
+
+Capacity rejection is evidence, not an automatic run failure. DragonBreath currently returns HTTP 503 when its SSE slots are full, but DragonSniff does not treat that product-specific capacity as a universal Dragon limit. Status, timing, raw body, parsed JSON when valid, run ID, cycle, and request identity remain in the same JSONL evidence stream as normal observation.
+
+Health is sampled before the run, after a successful connection, after disconnect or a rejected attempt, and after the run. Every raw response is retained. Selected optional fields such as boot ID, uptime, heap measurements, task headroom, and SSE diagnostics are surfaced only when present. Missing health or unknown fields do not fail a run. A boot-ID change is reported as a change in observed evidence, not labeled a crash or assigned a cause.
+
+**Stop churn** cancels future cycles, closes the active churn-owned stream, and preserves the evidence already collected. The UI remains `stopping` until the controller, stream worker, and both local connection permits are actually clean; only then does the run become `cancelled`. Completed, cancelled, and failed churn evidence uses the existing **Bag evidence as JSONL** export.
+
+See [Bounded SSE churn runner](docs/churn-runner.md) for lifecycle, evidence, and interpretation details.
+
 Run the tests without installing the package:
 
 ```console
@@ -111,7 +125,7 @@ A diagnostic tool also changes the system it observes: HTTP requests consume soc
 
 ## Status
 
-Issue #1 has a coherent local first vertical slice. Physical DragonBreath testing has verified info, state, health, SSE rejection at product capacity, later successful SSE connection, live event recording, explicit cleanup, heap recovery, and JSONL export. The bounded churn runner from Issue #2 remains future work.
+Issue #1 provides the local observation vertical slice. Issue #2 adds the bounded sequential SSE churn runner with health sampling, cancellation, reboot evidence, and correlated JSONL records. Physical Issue #1 DragonBreath evidence remains recorded separately; Issue #2 hardware results are documented only when an actual device run is performed.
 
 ## Name
 
