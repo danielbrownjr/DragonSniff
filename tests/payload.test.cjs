@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 const {
   churnHealthText,
+  churnProfileConfiguration,
   churnSummaryText,
   payloadText,
 } = require("../src/dragonsniff/web/payload.js");
@@ -70,4 +71,20 @@ test("churn copy controls reject absent evidence and preserve raw health exactly
   assert.equal(churnSummaryText({state: "idle"}), null);
   assert.equal(churnHealthText({latest_health: {raw_payload: raw}}), raw);
   assert.equal(churnHealthText({latest_health: {parsed: {boot_id: "abc"}}}), null);
+});
+
+test("named churn profiles populate exact editable configurations", () => {
+  const profiles = {
+    Baseline: {cycles: 3, observe_seconds: 2, max_events: 3, delay_seconds: 0.5},
+    Extended: {cycles: 10, observe_seconds: 5, max_events: 5, delay_seconds: 0.25},
+    Stress: {cycles: 20, observe_seconds: 10, max_events: 10, delay_seconds: 0.1},
+  };
+
+  assert.deepEqual(churnProfileConfiguration(profiles, "Baseline"), profiles.Baseline);
+  assert.deepEqual(churnProfileConfiguration(profiles, "Extended"), profiles.Extended);
+  assert.deepEqual(churnProfileConfiguration(profiles, "Stress"), profiles.Stress);
+  assert.equal(churnProfileConfiguration(profiles, "Custom"), null);
+  const selected = churnProfileConfiguration(profiles, "Baseline");
+  selected.cycles = 4;
+  assert.equal(profiles.Baseline.cycles, 3);
 });

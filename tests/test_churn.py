@@ -39,6 +39,26 @@ def churn_threads() -> list[threading.Thread]:
 
 
 class ChurnConfigTests(TestCase):
+    def test_named_profiles_have_exact_values_and_remain_within_hard_bounds(self) -> None:
+        profiles = ChurnConfig.profiles()
+
+        self.assertEqual(
+            profiles,
+            {
+                "Baseline": ChurnConfig(3, 2.0, 3, 0.5),
+                "Extended": ChurnConfig(10, 5.0, 5, 0.25),
+                "Stress": ChurnConfig(20, 10.0, 10, 0.1),
+            },
+        )
+        for config in profiles.values():
+            config.validate()
+
+    def test_profile_name_tracks_exact_profiles_and_custom_edits(self) -> None:
+        self.assertEqual(ChurnConfig().profile_name(), "Baseline")
+        self.assertEqual(ChurnConfig(10, 5.0, 5, 0.25).profile_name(), "Extended")
+        self.assertEqual(ChurnConfig(20, 10.0, 10, 0.1).profile_name(), "Stress")
+        self.assertEqual(ChurnConfig(4, 2.0, 3, 0.5).profile_name(), "Custom")
+
     def test_defaults_are_conservative_and_all_fields_are_bounded(self) -> None:
         config = ChurnConfig.from_value({})
 
@@ -71,6 +91,22 @@ class ChurnRunnerTests(TestCase):
         self.assertEqual(churn_threads(), [])
         self.assertTrue(runner.snapshot()["cleanup_complete"])
 
+    def test_each_named_profile_starts_completes_and_releases_resources(self) -> None:
+        with DeviceFixture({"event_count": 10}) as fixture:
+            for name, config in ChurnConfig.profiles().items():
+                with self.subTest(profile=name):
+                    runner = ChurnRunner(parse_target(fixture.target), config)
+                    runner.start()
+                    wait_until(
+                        lambda: runner.snapshot()["state"] == "completed",
+                        timeout=12.0,
+                    )
+                    snapshot = runner.snapshot()
+                    self.assertEqual(snapshot["profile"], name)
+                    self.assertEqual(snapshot["configuration"], config.snapshot())
+                    self.assertEqual(len(snapshot["cycles"]), config.cycles)
+                    self.assert_clean(runner)
+
     def test_one_successful_cycle_disconnects_deliberately_and_preserves_health(self) -> None:
         health = b'{"boot_id":"boot-a","free_heap":1234,"minimum_free_heap":987,"sse_clients":1,"future":{"value":true}}'
         with DeviceFixture({"quiet_seconds": 0.8, "/api/v2/health": health}) as fixture:
@@ -80,6 +116,7 @@ class ChurnRunnerTests(TestCase):
             snapshot = runner.snapshot()
 
         self.assertEqual(snapshot["successful_connections"], 1)
+        self.assertEqual(snapshot["profile"], "Custom")
         self.assertEqual(snapshot["cycles"][0]["outcome"], "disconnected")
         self.assertEqual(snapshot["cycles"][0]["connection"]["state"], "open")
         self.assertIsInstance(snapshot["cycles"][0]["connection"]["elapsed_ms"], float)

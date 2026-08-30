@@ -7,6 +7,36 @@ const endpointPayloads = new Map();
 const payloadTools = window.DragonSniffPayload;
 let requestInFlight = false;
 let currentSnapshot = null;
+let churnProfiles = {};
+
+const churnFields = {
+  cycles: "#churnCycles",
+  observe_seconds: "#churnObserveSeconds",
+  max_events: "#churnMaxEvents",
+  delay_seconds: "#churnDelaySeconds",
+};
+
+function setChurnConfiguration(configuration) {
+  Object.entries(churnFields).forEach(([name, selector]) => {
+    document.querySelector(selector).value = configuration[name];
+  });
+}
+
+function syncChurnProfiles(profiles, selectedProfile, configuration) {
+  if (!profiles || Object.keys(churnProfiles).length) return;
+  churnProfiles = profiles;
+  const selector = document.querySelector("#churnProfile");
+  Object.keys(profiles).forEach((name) => {
+    const option = document.createElement("option");
+    option.value = name;
+    option.textContent = name;
+    selector.append(option);
+  });
+  selector.value = selectedProfile in profiles ? selectedProfile : "Custom";
+  setChurnConfiguration(
+    payloadTools.churnProfileConfiguration(profiles, selectedProfile) || configuration,
+  );
+}
 
 function text(selector, value) {
   document.querySelector(selector).textContent = String(value);
@@ -130,6 +160,7 @@ function renderTimeline(records) {
 
 function renderChurn(snapshot) {
   const churn = snapshot.churn || {};
+  syncChurnProfiles(churn.profiles, churn.profile, churn.configuration);
   const state = churn.state || "idle";
   const running = state === "running";
   const stopping = state === "stopping";
@@ -163,6 +194,7 @@ function renderChurn(snapshot) {
 
   const inputs = document.querySelectorAll("#churnForm input");
   inputs.forEach((input) => { input.disabled = running || stopping; });
+  document.querySelector("#churnProfile").disabled = running || stopping;
   document.querySelector("#churnStartButton").disabled = running || stopping || normalActive;
   document.querySelector("#churnStopButton").disabled = !running;
   document.querySelector("#copyChurnSummary").disabled = payloadTools.churnSummaryText(churn) === null;
@@ -241,6 +273,18 @@ if (window.location.protocol === "file:") {
   document.querySelector("#stopEventsButton").addEventListener("click", () => act("/local/v1/session/stop-events"));
   document.querySelector("#stopButton").addEventListener("click", () => act("/local/v1/session/stop"));
   const churnNotice = document.querySelector("#churnNotice");
+  document.querySelector("#churnProfile").addEventListener("change", (event) => {
+    const configuration = payloadTools.churnProfileConfiguration(
+      churnProfiles,
+      event.currentTarget.value,
+    );
+    if (configuration) setChurnConfiguration(configuration);
+  });
+  document.querySelectorAll("#churnForm input").forEach((input) => {
+    input.addEventListener("input", () => {
+      document.querySelector("#churnProfile").value = "Custom";
+    });
+  });
   document.querySelector("#churnForm").addEventListener("submit", (event) => {
     event.preventDefault();
     const configuration = {

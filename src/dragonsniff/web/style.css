@@ -79,7 +79,7 @@ main { display: grid; gap: 12px; }
 .connect-card { display: grid; gap: 12px; }
 label { display: block; margin-bottom: 5px; color: var(--muted-foreground); font-size: .8rem; }
 .control-row, .actions { display: flex; flex-wrap: wrap; gap: 7px; }
-input {
+input, select {
   flex: 1 1 280px;
   min-width: 0;
   color: inherit;
@@ -92,6 +92,9 @@ input {
 .churn-card { border-left: 4px solid var(--warn); }
 .churn-card .eyebrow { color: var(--warn); margin-bottom: 4px; }
 .churn-form { display: grid; gap: 10px; margin-top: 12px; }
+.profile-field { max-width: 320px; }
+.profile-field select { display: block; width: 100%; margin: 5px 0 3px; }
+.profile-field span { display: block; font-size: .72rem; }
 .config-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; }
 .config-grid label { margin: 0; }
 .config-grid input { width: 100%; margin-top: 5px; }
@@ -121,7 +124,7 @@ button, .button-link {
 }
 button:hover, .button-link:hover { background: color-mix(in srgb, var(--foreground) 6%, var(--secondary)); }
 button.primary { color: var(--primary-foreground); background: var(--primary); border-color: transparent; font-weight: 600; }
-button:focus-visible, .button-link:focus-visible, input:focus-visible, summary:focus-visible {
+button:focus-visible, .button-link:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 2px;
 }

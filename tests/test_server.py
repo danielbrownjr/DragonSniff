@@ -89,7 +89,26 @@ class ServerTests(TestCase):
         self.assertIn("Stop event stream", html)
         self.assertIn("Poke it with a stick", html)
         self.assertIn("Start bounded churn", html)
+        self.assertIn('id="churnProfile"', html)
+        self.assertIn("Choose a repeatable bounded profile", html)
         self.assertIn("Copy run summary", html)
+
+    def test_idle_snapshot_exposes_named_churn_profiles(self) -> None:
+        with LocalServerFixture() as local:
+            status, body, _ = local.request("GET", "/local/v1/session")
+
+        churn = json.loads(body)["churn"]
+        self.assertEqual(status, 200)
+        self.assertEqual(churn["profile"], "Baseline")
+        self.assertEqual(churn["profiles"]["Baseline"], {
+            "cycles": 3, "observe_seconds": 2.0, "max_events": 3, "delay_seconds": 0.5,
+        })
+        self.assertEqual(churn["profiles"]["Extended"], {
+            "cycles": 10, "observe_seconds": 5.0, "max_events": 5, "delay_seconds": 0.25,
+        })
+        self.assertEqual(churn["profiles"]["Stress"], {
+            "cycles": 20, "observe_seconds": 10.0, "max_events": 10, "delay_seconds": 0.1,
+        })
 
     def test_invalid_target_is_rejected_without_starting_a_session(self) -> None:
         with LocalServerFixture() as local:

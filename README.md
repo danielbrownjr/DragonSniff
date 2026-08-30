@@ -88,6 +88,14 @@ The bounded churn runner deliberately repeats the read-only SSE lifecycle agains
 
 The conservative defaults are three cycles, two seconds or three application events per connection, and a half-second delay. The service enforces hard bounds of 1–20 cycles, 0.25–15 seconds of observation, 1–25 events, and 0.1–5 seconds between cycles. Zero-delay storms, infinite runs, concurrency controls, arbitrary methods, and arbitrary paths are not available.
 
+The profile selector makes comparative runs repeatable while leaving every value visible and editable:
+
+- **Baseline:** 3 cycles, 2 seconds maximum observation per cycle, 3 application events, 0.5-second delay.
+- **Extended:** 10 cycles, 5 seconds maximum observation per cycle, 5 application events, 0.25-second delay.
+- **Stress:** 20 cycles, 10 seconds maximum observation per cycle, 10 application events, 0.1-second delay.
+
+Editing a populated value switches the selector to **Custom**. Stress is still bounded and sequential; it does not increase concurrency. A useful comparison workflow is to run Baseline, Extended, then Stress against DragonBreath 1.1.14, preserve each JSONL export, and repeat the same profiles against a later PID build. The resulting evidence compares communications and resource behavior only; DragonSniff does not validate PID tuning or thermal-control quality.
+
 Capacity rejection is evidence, not an automatic run failure. DragonBreath currently returns HTTP 503 when its SSE slots are full, but DragonSniff does not treat that product-specific capacity as a universal Dragon limit. Status, timing, raw body, parsed JSON when valid, run ID, cycle, and request identity remain in the same JSONL evidence stream as normal observation.
 
 Health is sampled before the run, after a successful connection, after disconnect or a rejected attempt, and after the run. Every raw response is retained. Selected optional fields such as boot ID, uptime, heap measurements, task headroom, and SSE diagnostics are surfaced only when present. Missing health or unknown fields do not fail a run. A boot-ID change is reported as a change in observed evidence, not labeled a crash or assigned a cause.

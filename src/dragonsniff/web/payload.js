@@ -21,7 +21,7 @@
   function churnSummaryText(churn) {
     if (!churn || !churn.run_id) return null;
     const fields = [
-      "run_id", "state", "target", "configuration", "current_cycle", "total_cycles",
+      "run_id", "state", "target", "profile", "configuration", "current_cycle", "total_cycles",
       "successful_connections", "rejected_connections", "http_failures",
       "transport_failures", "local_resource_failures", "remote_eof", "events_observed",
       "parse_failures", "boot_id_changed", "boot_id_changes", "initial_boot_id",
@@ -38,5 +38,13 @@
     return typeof raw === "string" ? raw : null;
   }
 
-  return {payloadText, churnSummaryText, churnHealthText};
+  function churnProfileConfiguration(profiles, name) {
+    const configuration = profiles?.[name];
+    if (!configuration || typeof configuration !== "object") return null;
+    const fields = ["cycles", "observe_seconds", "max_events", "delay_seconds"];
+    if (!fields.every((field) => typeof configuration[field] === "number")) return null;
+    return Object.fromEntries(fields.map((field) => [field, configuration[field]]));
+  }
+
+  return {payloadText, churnSummaryText, churnHealthText, churnProfileConfiguration};
 });

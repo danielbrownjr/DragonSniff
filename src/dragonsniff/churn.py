@@ -32,6 +32,28 @@ class ChurnConfig:
     MAX_DELAY_SECONDS = 5.0
 
     @classmethod
+    def profiles(cls) -> dict[str, "ChurnConfig"]:
+        """Return the reusable, bounded comparison profiles shown by the UI."""
+        return {
+            "Baseline": cls(3, 2.0, 3, 0.5),
+            "Extended": cls(10, 5.0, 5, 0.25),
+            "Stress": cls(20, 10.0, 10, 0.1),
+        }
+
+    @classmethod
+    def profile_snapshots(cls) -> dict[str, dict[str, int | float]]:
+        profiles = cls.profiles()
+        for config in profiles.values():
+            config.validate()
+        return {name: config.snapshot() for name, config in profiles.items()}
+
+    def profile_name(self) -> str:
+        for name, config in self.profiles().items():
+            if self == config:
+                return name
+        return "Custom"
+
+    @classmethod
     def from_value(cls, value: object) -> "ChurnConfig":
         if not isinstance(value, dict):
             raise ValueError("configuration must be a JSON object")
@@ -140,6 +162,8 @@ class ChurnRunner:
             "run_id": self.run_id,
             "target": target.base_url,
             "configuration": config.snapshot(),
+            "profile": config.profile_name(),
+            "profiles": config.profile_snapshots(),
             "bounds": config.bounds(),
             "current_cycle": 0,
             "total_cycles": config.cycles,
@@ -177,6 +201,7 @@ class ChurnRunner:
                 run_id=self.run_id,
                 target=self.target.base_url,
                 configuration=self.config.snapshot(),
+                profile=self.config.profile_name(),
                 bounds=self.config.bounds(),
             )
             self._state["start_timestamp"] = started["timestamp"]

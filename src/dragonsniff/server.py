@@ -154,6 +154,8 @@ class SessionManager:
             "run_id": None,
             "target": None,
             "configuration": config.snapshot(),
+            "profile": config.profile_name(),
+            "profiles": config.profile_snapshots(),
             "bounds": config.bounds(),
             "current_cycle": 0,
             "total_cycles": config.cycles,
