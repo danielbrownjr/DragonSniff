@@ -64,6 +64,12 @@ class ChurnConfigTests(TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 ChurnConfig.from_value(value)
 
+    def test_settlement_schedule_must_be_positive_and_strictly_increasing(self) -> None:
+        target = parse_target("dragon.local")
+        for schedule in ((), (0.0,), (0.02, 0.01), (0.01, 0.01)):
+            with self.subTest(schedule=schedule), self.assertRaises(ValueError):
+                ChurnRunner(target, short_config(), settlement_schedule=schedule)
+
 
 class ChurnRunnerTests(TestCase):
     def assert_clean(self, runner: ChurnRunner) -> None:
@@ -112,6 +118,157 @@ class ChurnRunnerTests(TestCase):
         self.assertEqual(snapshot["successful_connections"], 3)
         self.assertLessEqual(max_owned, 1)
         self.assertLessEqual(max_device, 2)
+        self.assert_clean(runner)
+
+    def test_completed_run_settles_to_pre_run_client_baseline(self) -> None:
+        health_sequence = [
+            b'{"boot_id":"same","sse_clients":0,"free_heap_bytes":1000}',
+            b'{"boot_id":"same","sse_clients":1,"free_heap_bytes":800}',
+            b'{"boot_id":"same","sse_clients":1,"free_heap_bytes":820}',
+            b'{"boot_id":"same","sse_clients":1,"free_heap_bytes":830}',
+            b'{"boot_id":"same","sse_clients":1,"free_heap_bytes":840}',
+            b'{"boot_id":"same","sse_clients":0,"free_heap_bytes":1000}',
+        ]
+        with DeviceFixture(
+            {"quiet_seconds": 0.8, "health_sequence": health_sequence}
+        ) as fixture:
+            runner = ChurnRunner(
+                parse_target(fixture.target),
+                short_config(),
+                settlement_schedule=(0.01, 0.02),
+            )
+            runner.start()
+            wait_until(lambda: runner.snapshot()["state"] == "completed")
+            snapshot = runner.snapshot()
+
+        settlement = snapshot["settlement"]
+        self.assertEqual(settlement["state"], "recovered")
+        self.assertEqual(settlement["baseline_sse_clients"], 0)
+        self.assertEqual(settlement["latest_sse_clients"], 0)
+        self.assertEqual(len(settlement["samples"]), 2)
+        self.assertEqual(settlement["samples"][-1]["free_heap"], 1000)
+        kinds = [record["kind"] for record in runner.recorder.snapshot()]
+        self.assertIn("churn_settlement_started", kinds)
+        self.assertIn("churn_settlement_recovered", kinds)
+        self.assertLess(
+            kinds.index("churn_settlement_recovered"),
+            kinds.index("churn_run_completed"),
+        )
+        self.assert_clean(runner)
+
+    def test_cancelled_run_also_captures_settlement_recovery(self) -> None:
+        health_sequence = [
+            b'{"boot_id":"same","sse_clients":0,"free_heap_bytes":1000}',
+            b'{"boot_id":"same","sse_clients":1,"free_heap_bytes":800}',
+            b'{"boot_id":"same","sse_clients":1,"free_heap_bytes":850}',
+            b'{"boot_id":"same","sse_clients":0,"free_heap_bytes":1000}',
+        ]
+        with DeviceFixture(
+            {"quiet_seconds": 2.0, "health_sequence": health_sequence}
+        ) as fixture:
+            runner = ChurnRunner(
+                parse_target(fixture.target),
+                short_config(),
+                settlement_schedule=(0.01, 0.02),
+            )
+            runner.start()
+            wait_until(lambda: runner.snapshot()["active_churn_connections"] == 1)
+            wait_until(lambda: any(
+                record["kind"] == "churn_health_sample"
+                and record["sample_point"] == "after_connection"
+                for record in runner.recorder.snapshot()
+            ))
+            runner.stop(timeout=1.0)
+            wait_until(lambda: runner.snapshot()["state"] == "cancelled")
+            snapshot = runner.snapshot()
+
+        self.assertEqual(snapshot["settlement"]["state"], "recovered")
+        self.assertEqual(snapshot["settlement"]["latest_sse_clients"], 0)
+        sample_points = [
+            record["sample_point"]
+            for record in runner.recorder.snapshot()
+            if record["kind"] == "churn_health_sample"
+        ]
+        self.assertNotIn("after_disconnect", sample_points)
+        self.assertNotIn("after_run", sample_points)
+        self.assertEqual(sample_points.count("settlement"), 2)
+        self.assert_clean(runner)
+
+    def test_settlement_timeout_is_evidence_not_run_failure(self) -> None:
+        health_sequence = [
+            b'{"sse_clients":0}',
+            b'{"sse_clients":1}',
+            b'{"sse_clients":1}',
+            b'{"sse_clients":1}',
+            b'{"sse_clients":1}',
+            b'{"sse_clients":1}',
+        ]
+        with DeviceFixture(
+            {"quiet_seconds": 0.8, "health_sequence": health_sequence}
+        ) as fixture:
+            runner = ChurnRunner(
+                parse_target(fixture.target),
+                short_config(),
+                settlement_schedule=(0.01, 0.02),
+            )
+            runner.start()
+            wait_until(lambda: runner.snapshot()["state"] == "completed")
+            snapshot = runner.snapshot()
+
+        self.assertEqual(snapshot["settlement"]["state"], "timed_out")
+        self.assertIsNone(snapshot["failure"])
+        self.assertTrue(any(
+            record["kind"] == "churn_settlement_timed_out"
+            for record in runner.recorder.snapshot()
+        ))
+        self.assert_clean(runner)
+
+    def test_additional_stop_interrupts_settlement_and_cancels_run(self) -> None:
+        health_sequence = [
+            b'{"sse_clients":0}',
+            b'{"sse_clients":1}',
+            b'{"sse_clients":1}',
+            b'{"sse_clients":1}',
+        ]
+        with DeviceFixture(
+            {"quiet_seconds": 0.8, "health_sequence": health_sequence}
+        ) as fixture:
+            runner = ChurnRunner(
+                parse_target(fixture.target),
+                short_config(),
+                settlement_schedule=(0.5, 1.0),
+            )
+            runner.start()
+            wait_until(lambda: runner.snapshot()["state"] == "settling")
+            self.assertFalse(runner.snapshot()["cleanup_complete"])
+            runner.stop(timeout=1.0)
+            wait_until(lambda: runner.snapshot()["state"] == "cancelled")
+            snapshot = runner.snapshot()
+
+        self.assertEqual(snapshot["settlement"]["state"], "interrupted")
+        self.assertTrue(any(
+            record["kind"] == "churn_settlement_interrupted"
+            for record in runner.recorder.snapshot()
+        ))
+        self.assert_clean(runner)
+
+    def test_heap_only_health_gets_one_delayed_noncomparable_sample(self) -> None:
+        health = b'{"free_heap_bytes":1234}'
+        with DeviceFixture(
+            {"quiet_seconds": 0.8, "/api/v2/health": health}
+        ) as fixture:
+            runner = ChurnRunner(
+                parse_target(fixture.target),
+                short_config(),
+                settlement_schedule=(0.01, 0.02),
+            )
+            runner.start()
+            wait_until(lambda: runner.snapshot()["state"] == "completed")
+            snapshot = runner.snapshot()
+
+        self.assertEqual(snapshot["settlement"]["state"], "not_applicable")
+        self.assertEqual(len(snapshot["settlement"]["samples"]), 1)
+        self.assertEqual(snapshot["settlement"]["samples"][0]["free_heap"], 1234)
         self.assert_clean(runner)
 
     def test_capacity_rejection_is_evidence_not_run_failure(self) -> None:

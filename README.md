@@ -90,9 +90,9 @@ The conservative defaults are three cycles, two seconds or three application eve
 
 Capacity rejection is evidence, not an automatic run failure. DragonBreath currently returns HTTP 503 when its SSE slots are full, but DragonSniff does not treat that product-specific capacity as a universal Dragon limit. Status, timing, raw body, parsed JSON when valid, run ID, cycle, and request identity remain in the same JSONL evidence stream as normal observation.
 
-Health is sampled before the run, after a successful connection, after disconnect or a rejected attempt, and after the run. Every raw response is retained. Selected optional fields such as boot ID, uptime, heap measurements, task headroom, and SSE diagnostics are surfaced only when present. Missing health or unknown fields do not fail a run. A boot-ID change is reported as a change in observed evidence, not labeled a crash or assigned a cause.
+Health is sampled before the run, after a successful connection, after disconnect or a rejected attempt, and immediately after the run. Completed and cancelled runs then enter a bounded settlement phase with health checkpoints at one, two, five, and ten seconds. When the optional `sse_clients` field exists, settlement ends early after the observed count returns to its pre-run baseline; the baseline need not be zero because another legitimate client may exist. If that field is absent, DragonSniff may still retain one delayed heap sample but does not invent a client-recovery conclusion. Settlement timeout is evidence, not an automatic run failure. Every raw response is retained. Selected optional fields such as boot ID, uptime, heap measurements, task headroom, and SSE diagnostics are surfaced only when present. Missing health or unknown fields do not fail a run. A boot-ID change is reported as a change in observed evidence, not labeled a crash or assigned a cause.
 
-**Stop churn** cancels future cycles, closes the active churn-owned stream, and preserves the evidence already collected. The UI remains `stopping` until the controller, stream worker, and both local connection permits are actually clean; only then does the run become `cancelled`. Completed, cancelled, and failed churn evidence uses the existing **Bag evidence as JSONL** export.
+**Stop churn** cancels future cycles, closes the active churn-owned stream, and preserves the evidence already collected. Completed and cancelled runs may report `settling` while the bounded device-visible recovery evidence is collected. The UI does not claim terminal cleanup until the controller, stream worker, and both local connection permits are actually clean; only then does the run become `completed` or `cancelled`. Completed, cancelled, and failed churn evidence uses the existing **Bag evidence as JSONL** export.
 
 See [Bounded SSE churn runner](docs/churn-runner.md) for lifecycle, evidence, and interpretation details.
 
@@ -125,7 +125,7 @@ A diagnostic tool also changes the system it observes: HTTP requests consume soc
 
 ## Status
 
-Issue #1 provides the local observation vertical slice. Issue #2 adds the bounded sequential SSE churn runner with health sampling, cancellation, reboot evidence, and correlated JSONL records. Physical Issue #1 DragonBreath evidence remains recorded separately; Issue #2 hardware results are documented only when an actual device run is performed.
+Issue #1 provides the local observation vertical slice. Issue #2 adds the bounded sequential SSE churn runner with health sampling, cancellation, reboot evidence, correlated JSONL records, and baseline-relative settlement evidence. Physical DragonBreath results for both issues are recorded in [hardware validation](docs/hardware-validation.md).
 
 ## Name
 

@@ -132,7 +132,9 @@ function renderChurn(snapshot) {
   const churn = snapshot.churn || {};
   const state = churn.state || "idle";
   const running = state === "running";
+  const settling = state === "settling";
   const stopping = state === "stopping";
+  const churnActive = running || settling || stopping;
   const normalActive = !["idle", "stopped"].includes(snapshot.session_state);
   currentSnapshot = snapshot;
   text("#churnState", state);
@@ -144,6 +146,12 @@ function renderChurn(snapshot) {
   text("#churnTransportFailures", (churn.transport_failures || 0) + (churn.local_resource_failures || 0));
   text("#churnEvents", churn.events_observed || 0);
   text("#churnElapsed", `${((churn.elapsed_ms || 0) / 1000).toFixed(1)} s`);
+  const settlement = churn.settlement || {};
+  const settlementClients = settlement.baseline_sse_clients === null || settlement.baseline_sse_clients === undefined
+    ? ""
+    : ` (${settlement.latest_sse_clients ?? "?"} / baseline ${settlement.baseline_sse_clients})`;
+  text("#churnSettlement", `${settlement.state || "not started"}${settlementClients}`);
+  document.querySelector("#churnSettlement").dataset.status = settlement.state || "idle";
   const bootStatus = churn.boot_id_changed
     ? `changed: ${churn.initial_boot_id || "unknown"} -> ${churn.latest_boot_id || "unknown"}`
     : (churn.latest_boot_id || "not observed");
@@ -155,15 +163,15 @@ function renderChurn(snapshot) {
     : health?.status === 404
       ? "The health endpoint is unavailable; lifecycle exercise continues without optional health interpretation."
       : health
-        ? `Observed optional health fields: ${Object.keys(health.observed || {}).join(", ") || "none"}. Raw evidence is retained.`
+        ? `Observed optional health fields: ${Object.keys(health.observed || {}).join(", ") || "none"}. Settlement: ${settlement.state || "not started"}. Raw evidence is retained.`
         : "No health observation yet.";
   text("#churnHealthSignal", healthSignal);
   text("#churnHealth", churn.latest_health ? pretty(churn.latest_health) : "No health observation");
   text("#churnCyclesEvidence", churn.cycles?.length ? pretty(churn.cycles) : "No cycles recorded");
 
   const inputs = document.querySelectorAll("#churnForm input");
-  inputs.forEach((input) => { input.disabled = running || stopping; });
-  document.querySelector("#churnStartButton").disabled = running || stopping || normalActive;
+  inputs.forEach((input) => { input.disabled = churnActive; });
+  document.querySelector("#churnStartButton").disabled = churnActive || normalActive;
   document.querySelector("#churnStopButton").disabled = !running;
   document.querySelector("#copyChurnSummary").disabled = payloadTools.churnSummaryText(churn) === null;
   document.querySelector("#copyChurnHealth").disabled = payloadTools.churnHealthText(churn) === null;
@@ -191,7 +199,7 @@ function render(snapshot) {
   text("#eventRaw", event?.raw_payload || "No event");
   const active = !["idle", "stopped"].includes(snapshot.session_state);
   const stopping = snapshot.session_state === "stopping";
-  const churnActive = ["running", "stopping"].includes(snapshot.churn?.state);
+  const churnActive = ["running", "settling", "stopping"].includes(snapshot.churn?.state);
   const streamActive = !stopping && ["connecting", "open"].includes(sse.state);
   document.querySelector("#connectForm button[type='submit']").disabled = stopping || churnActive;
   document.querySelector("#refreshButton").disabled = !active || stopping;

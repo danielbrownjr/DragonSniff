@@ -66,7 +66,7 @@
           <label>Cycles<input id="churnCycles" type="number" value="3" min="1" max="20" step="1" required></label>
           <label>Observe seconds<input id="churnObserveSeconds" type="number" value="2" min="0.25" max="15" step="0.25" required></label>
           <label>Event bound<input id="churnMaxEvents" type="number" value="3" min="1" max="25" step="1" required></label>
-          <label>Delay seconds<input id="churnDelaySeconds" type="number" value="0.5" min="0.1" max="5" step="0.1" required></label>
+          <label>Delay seconds<input id="churnDelaySeconds" type="number" value="0.5" min="0.1" max="5" step="0.05" required></label>
         </div>
         <div class="actions">
           <button id="churnStartButton" type="submit" class="primary">Start bounded churn</button>
@@ -86,6 +86,7 @@
         <div><span>Events</span><strong id="churnEvents">0</strong></div>
         <div><span>Elapsed</span><strong id="churnElapsed">0.0 s</strong></div>
         <div><span>Boot ID</span><strong id="churnBoot">not observed</strong></div>
+        <div><span>Settlement</span><strong id="churnSettlement">not started</strong></div>
       </div>
       <p id="churnHealthSignal" class="notice">No health observation yet.</p>
       <div class="split churn-evidence">

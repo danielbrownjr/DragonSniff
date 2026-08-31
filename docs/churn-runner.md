@@ -13,7 +13,9 @@ Each run receives a unique run ID. Cycles are sequential and carry their cycle n
 5. Deliberately close the stream, join its worker, and verify the local connection permit returned.
 6. Sample health after disconnect. Rejected or failed attempts receive an after-attempt sample instead.
 7. Wait the configured nonzero delay, then begin the next cycle.
-8. Sample final health and record terminal cleanup.
+8. Sample immediate final health.
+9. Enter bounded settlement for completed or cancelled runs. Sample health after one, two, five, and ten seconds, stopping early when an optional SSE-client count returns to its pre-run baseline.
+10. Record terminal cleanup after the local workers and connection permits are clean.
 
 Comment-only SSE blocks are retained as `sse_comment` transport evidence but do not satisfy the application-event bound. Remote EOF is different from deliberate disconnect. HTTP rejection is different from transport failure. A local connection-budget failure is different from both.
 
@@ -58,9 +60,17 @@ The runner never requires product-specific health fields. It may surface `boot_i
 
 If a nonempty boot identifier changes, DragonSniff records the old value, new value, cycle, sample point, and time. It reports only that the identifier changed. Reboot, watchdog reset, OTA, manual power cycling, or another cause cannot be inferred from that field alone.
 
+## Post-run settlement
+
+Immediate post-disconnect samples are deliberately preserved because they reveal whether a short inter-cycle delay can outrun device-side SSE reclamation. DragonSniff does not insert a long pause between cycles or mask a capacity rejection.
+
+After the connection phase, completed and cancelled runs enter one bounded settlement phase. Health is sampled at absolute checkpoints of one, two, five, and ten seconds. If both the pre-run and current health payloads contain a nonnegative integer `sse_clients`, settlement ends early when the current value is less than or equal to the pre-run value. Comparison is baseline-relative rather than zero-relative because another authorized client may own a stream. A delayed heap value is retained alongside each settlement sample when exposed.
+
+The SSE-client field remains optional and product-specific. If it is absent but a heap measurement exists, DragonSniff takes one delayed sample and reports that client recovery is not comparable. If neither signal exists, settlement is immediately marked not applicable. If a comparable count remains above baseline at ten seconds, settlement is recorded as timed out evidence without turning an otherwise completed run into a failure. Raw health payloads and all settlement lifecycle records remain in the JSONL export.
+
 ## Cancellation and cleanup
 
-Cancellation stops future cycles, signals the active stream-specific stop event, shuts down and closes the owned stream, and boundedly joins the controller and stream worker. Evidence collected before cancellation remains exportable. The run stays `stopping` while any worker or permit remains active; it becomes `cancelled` only after cleanup is true.
+Cancellation stops future cycles, signals the active stream-specific stop event, shuts down and closes the owned stream, and boundedly joins the controller and stream worker. Evidence collected before cancellation remains exportable. After local stream cleanup it uses the same bounded settlement phase as a completed run, so cancellation can capture eventual device-visible recovery without scheduling another SSE cycle. The run becomes `cancelled` only after settlement and local cleanup are complete.
 
 An internal controller exception is recorded as `churn_internal_failure`. It does not escape as the only worker-thread traceback. Cleanup timeouts are evidence and prevent a false completed/cancelled cleanup claim until the remaining resource actually exits.
 

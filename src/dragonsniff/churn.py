@@ -112,6 +112,7 @@ class ChurnRunner:
     """Run one sequential, explicitly bounded SSE churn exercise."""
 
     TERMINAL_STATES = {"completed", "cancelled", "failed"}
+    SETTLEMENT_SAMPLE_SECONDS = (1.0, 2.0, 5.0, 10.0)
 
     def __init__(
         self,
@@ -120,6 +121,7 @@ class ChurnRunner:
         *,
         recorder: SessionRecorder | None = None,
         client: DragonClient | None = None,
+        settlement_schedule: tuple[float, ...] | None = None,
     ) -> None:
         config.validate()
         self.target = target
@@ -129,6 +131,23 @@ class ChurnRunner:
         self.run_id = uuid4().hex
         self._lock = Lock()
         self._cancel = Event()
+        self._settlement_interrupt = Event()
+        self._settlement_schedule = (
+            self.SETTLEMENT_SAMPLE_SECONDS
+            if settlement_schedule is None
+            else settlement_schedule
+        )
+        if (
+            not self._settlement_schedule
+            or any(seconds <= 0 for seconds in self._settlement_schedule)
+            or any(
+                later <= earlier
+                for earlier, later in zip(
+                    self._settlement_schedule, self._settlement_schedule[1:]
+                )
+            )
+        ):
+            raise ValueError("settlement schedule must contain increasing positive seconds")
         self._thread: Thread | None = None
         self._stream_thread: Thread | None = None
         self._stream_stop: Event | None = None
@@ -157,6 +176,14 @@ class ChurnRunner:
             "initial_boot_id": None,
             "latest_boot_id": None,
             "latest_health": None,
+            "settlement": {
+                "state": "not_started",
+                "baseline_sse_clients": None,
+                "latest_sse_clients": None,
+                "max_wait_seconds": self._settlement_schedule[-1],
+                "elapsed_ms": 0.0,
+                "samples": [],
+            },
             "cycles": [],
             "cleanup_complete": True,
             "failure": None,
@@ -195,9 +222,12 @@ class ChurnRunner:
                 return True
             if self._state["state"] == "idle":
                 return True
+            settling = self._state["state"] == "settling"
             self._state["state"] = "stopping"
             thread = self._thread
             stream_stop = self._stream_stop
+        if settling:
+            self._settlement_interrupt.set()
         self._cancel.set()
         if stream_stop is not None:
             stream_stop.set()
@@ -233,8 +263,14 @@ class ChurnRunner:
             self.recorder.append("churn_internal_failure", run_id=self.run_id, **details)
         finally:
             self._cancel_active_stream()
+            proposed_terminal = "cancelled" if self._cancel.is_set() else outcome
+            if proposed_terminal in {"completed", "cancelled"}:
+                with self._lock:
+                    final_cycle = self._state["current_cycle"]
+                self._run_settlement(cycle=final_cycle)
+            terminal = "cancelled" if self._cancel.is_set() else proposed_terminal
             with self._lock:
-                self._pending_terminal = "cancelled" if self._cancel.is_set() else outcome
+                self._pending_terminal = terminal
                 if self._state["state"] not in self.TERMINAL_STATES:
                     self._state["state"] = "stopping"
 
@@ -398,12 +434,15 @@ class ChurnRunner:
         if cleanup_failure is not None:
             raise RuntimeError(cleanup_failure)
 
-    def _sample_health(self, point: str, *, cycle: int) -> None:
+    def _sample_health(
+        self, point: str, *, cycle: int, **context_details: object
+    ) -> dict[str, Any]:
         context = {
             "run_id": self.run_id,
             "cycle": cycle,
             "owner": "churn",
             "sample_point": point,
+            **context_details,
         }
         result = self.client.fetch_json("/api/v2/health", context=context)
         parsed = result.get("parsed")
@@ -431,6 +470,149 @@ class ChurnRunner:
                     self._state["boot_id_changes"].append(change)
                     self.recorder.append("churn_boot_id_changed", run_id=self.run_id, **change)
                 self._state["latest_boot_id"] = boot_id
+            if point == "before_run":
+                self._state["settlement"]["baseline_sse_clients"] = (
+                    self._client_count(observed.get("sse_clients"))
+                )
+        return sample
+
+    @staticmethod
+    def _client_count(value: object) -> int | None:
+        return (
+            value
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+            else None
+        )
+
+    @staticmethod
+    def _heap_observation(observed: dict[str, Any]) -> int | float | None:
+        for name in ("free_heap_bytes", "free_heap"):
+            value = observed.get(name)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                return value
+        return None
+
+    def _run_settlement(self, *, cycle: int) -> None:
+        with self._lock:
+            settlement = self._state["settlement"]
+            baseline = settlement["baseline_sse_clients"]
+            latest_health = deepcopy(self._state["latest_health"])
+            latest_observed = (
+                latest_health.get("observed", {})
+                if isinstance(latest_health, dict)
+                else {}
+            )
+            latest_clients = self._client_count(latest_observed.get("sse_clients"))
+            has_heap = self._heap_observation(latest_observed) is not None
+            settlement["latest_sse_clients"] = latest_clients
+
+        if baseline is None and not has_heap:
+            self._finish_settlement(
+                "not_applicable",
+                cycle=cycle,
+                reason="health exposes no comparable SSE client count or heap measurement",
+            )
+            return
+        if baseline is not None and latest_clients is not None and latest_clients <= baseline:
+            self._finish_settlement(
+                "recovered",
+                cycle=cycle,
+                reason="latest health already returned to the pre-run SSE client baseline",
+            )
+            return
+
+        started_ns = time.monotonic_ns()
+        with self._lock:
+            self._state["state"] = "settling"
+            self._state["settlement"]["state"] = "settling"
+        self.recorder.append(
+            "churn_settlement_started",
+            run_id=self.run_id,
+            cycle=cycle,
+            baseline_sse_clients=baseline,
+            schedule_seconds=list(self._settlement_schedule),
+        )
+
+        for checkpoint in self._settlement_schedule:
+            deadline_ns = started_ns + int(checkpoint * 1_000_000_000)
+            remaining = max(0.0, (deadline_ns - time.monotonic_ns()) / 1_000_000_000)
+            if self._settlement_interrupt.wait(remaining):
+                self._finish_settlement(
+                    "interrupted",
+                    cycle=cycle,
+                    reason="settlement was interrupted by an additional stop request",
+                    started_ns=started_ns,
+                )
+                return
+            elapsed_ms = round((time.monotonic_ns() - started_ns) / 1_000_000, 3)
+            sample = self._sample_health(
+                "settlement",
+                cycle=cycle,
+                settlement_checkpoint_seconds=checkpoint,
+                settlement_elapsed_ms=elapsed_ms,
+            )
+            observed = sample.get("observed", {})
+            clients = self._client_count(observed.get("sse_clients"))
+            compact_sample = {
+                "checkpoint_seconds": checkpoint,
+                "elapsed_ms": elapsed_ms,
+                "status": sample.get("status"),
+                "ok": sample.get("ok"),
+                "sse_clients": clients,
+                "free_heap": self._heap_observation(observed),
+            }
+            with self._lock:
+                self._state["settlement"]["latest_sse_clients"] = clients
+                self._state["settlement"]["samples"].append(compact_sample)
+            if baseline is None:
+                self._finish_settlement(
+                    "not_applicable",
+                    cycle=cycle,
+                    reason="delayed health captured but SSE client count is not comparable",
+                    started_ns=started_ns,
+                )
+                return
+            if clients is not None and clients <= baseline:
+                self._finish_settlement(
+                    "recovered",
+                    cycle=cycle,
+                    reason="SSE client count returned to the pre-run baseline",
+                    started_ns=started_ns,
+                )
+                return
+
+        self._finish_settlement(
+            "timed_out",
+            cycle=cycle,
+            reason="SSE client count did not return to baseline within the settlement window",
+            started_ns=started_ns,
+        )
+
+    def _finish_settlement(
+        self,
+        state: str,
+        *,
+        cycle: int,
+        reason: str,
+        started_ns: int | None = None,
+    ) -> None:
+        elapsed_ms = (
+            0.0
+            if started_ns is None
+            else round((time.monotonic_ns() - started_ns) / 1_000_000, 3)
+        )
+        with self._lock:
+            settlement = self._state["settlement"]
+            settlement["state"] = state
+            settlement["elapsed_ms"] = elapsed_ms
+            settlement["reason"] = reason
+            result = deepcopy(settlement)
+        self.recorder.append(
+            f"churn_settlement_{state}",
+            run_id=self.run_id,
+            cycle=cycle,
+            settlement=result,
+        )
 
     @staticmethod
     def _health_observations(parsed: object) -> dict[str, Any]:
@@ -536,6 +718,7 @@ class ChurnRunner:
             "boot_id_changes",
             "initial_boot_id",
             "latest_boot_id",
+            "settlement",
             "cleanup_complete",
             "failure",
             "start_timestamp",

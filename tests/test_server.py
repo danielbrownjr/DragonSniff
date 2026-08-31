@@ -89,6 +89,9 @@ class ServerTests(TestCase):
         self.assertIn("Stop event stream", html)
         self.assertIn("Poke it with a stick", html)
         self.assertIn("Start bounded churn", html)
+        self.assertIn('id="churnDelaySeconds"', html)
+        self.assertIn('step="0.05"', html)
+        self.assertIn('id="churnSettlement"', html)
         self.assertIn("Copy run summary", html)
 
     def test_invalid_target_is_rejected_without_starting_a_session(self) -> None:

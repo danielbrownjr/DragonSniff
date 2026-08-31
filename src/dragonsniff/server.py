@@ -43,7 +43,11 @@ class SessionManager:
         with self._lock:
             previous = self._observer
             churn = self._churn
-        if churn is not None and churn.snapshot()["state"] in {"running", "stopping"}:
+        if churn is not None and churn.snapshot()["state"] in {
+            "running",
+            "settling",
+            "stopping",
+        }:
             raise RuntimeError("a churn run is active; stop it before normal observation")
         if previous is not None and not previous.stop():
             raise RuntimeError("the previous observation session is still stopping")
@@ -92,7 +96,11 @@ class SessionManager:
             previous = self._churn
         if observer is not None and observer.snapshot()["session_state"] != "stopped":
             raise RuntimeError("normal observation is active; stop it before starting churn")
-        if previous is not None and previous.snapshot()["state"] in {"running", "stopping"}:
+        if previous is not None and previous.snapshot()["state"] in {
+            "running",
+            "settling",
+            "stopping",
+        }:
             raise RuntimeError("a churn run is already active")
         churn = ChurnRunner(target, config)
         with self._lock:
@@ -173,6 +181,14 @@ class SessionManager:
             "initial_boot_id": None,
             "latest_boot_id": None,
             "latest_health": None,
+            "settlement": {
+                "state": "not_started",
+                "baseline_sse_clients": None,
+                "latest_sse_clients": None,
+                "max_wait_seconds": ChurnRunner.SETTLEMENT_SAMPLE_SECONDS[-1],
+                "elapsed_ms": 0.0,
+                "samples": [],
+            },
             "cycles": [],
             "cleanup_complete": True,
             "failure": None,

@@ -63,7 +63,7 @@ code, pre, .eyebrow, .timing, .metric strong, .endpoint-heading h2 {
   white-space: nowrap;
 }
 [data-status="open"], [data-status="available"], [data-status="completed"] { color: var(--ok); }
-[data-status="connecting"], [data-status="requesting"], [data-status="running"] { color: var(--primary); }
+[data-status="connecting"], [data-status="requesting"], [data-status="running"], [data-status="settling"] { color: var(--primary); }
 [data-status="unavailable"], [data-status="closed"], [data-status="stopping"], [data-status="cancelled"] { color: var(--warn); }
 [data-status="error"], [data-status="failed"] { color: var(--bad); }
 main { display: grid; gap: 12px; }
