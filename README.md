@@ -109,7 +109,7 @@ See [Bounded SSE churn runner](docs/churn-runner.md) for lifecycle, evidence, an
 
 Passive capture collects repeatable thermal-controller evidence without controlling the device. It reads device information at the boundaries, polls `/api/v2/state` at a bounded cadence, samples `/api/v2/health` less frequently, and preserves every raw response in the existing JSONL evidence stream. It never opens SSE or sends a device mutation.
 
-The named profiles are **Smoke** (2 minutes), **Soak** (15 minutes), and **Extended** (30 minutes). Every schedule is validated against both field bounds and the retained-record budget, so a nominal capture cannot silently churn its own beginning out of memory. Normal observation, churn, and passive capture are mutually exclusive.
+The named profiles are **Smoke** (2 minutes), **Soak** (15 minutes), **Extended** (30 minutes), and **Long Haul** (8 hours). Every schedule is validated against both field bounds and the retained-record budget, and each capture receives a recorder sized to its validated schedule, so a nominal capture cannot silently churn its own beginning out of memory. Normal observation, churn, and passive capture are mutually exclusive.
 
 For PID release-candidate comparisons, control DragonBreath through its ordinary supported interface, run the same DragonSniff profile and physical conditions against both builds, and retain each JSONL export. DragonSniff records the evidence but does not invent pass/fail conclusions about tuning or thermal safety.
 
