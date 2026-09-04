@@ -24,12 +24,12 @@ class CaptureConfig:
     health_interval_seconds: float = 10.0
 
     MIN_DURATION_SECONDS = 1.0
-    MAX_DURATION_SECONDS = 3_600.0
+    MAX_DURATION_SECONDS = 43_200.0
     MIN_STATE_INTERVAL_SECONDS = 0.5
     MAX_STATE_INTERVAL_SECONDS = 60.0
     MIN_HEALTH_INTERVAL_SECONDS = 5.0
     MAX_HEALTH_INTERVAL_SECONDS = 300.0
-    MAX_ESTIMATED_RECORDS = 1_900
+    MAX_ESTIMATED_RECORDS = 25_000
 
     @classmethod
     def profiles(cls) -> dict[str, "CaptureConfig"]:
@@ -37,6 +37,7 @@ class CaptureConfig:
             "Smoke": cls(120.0, 1.0, 10.0),
             "Soak": cls(900.0, 2.0, 30.0),
             "Extended": cls(1_800.0, 5.0, 60.0),
+            "Long Haul": cls(28_800.0, 5.0, 60.0),
         }
 
     @classmethod
@@ -155,7 +156,16 @@ class CaptureRunner:
         config.validate()
         self.target = target
         self.config = config
-        self.recorder = client.recorder if client is not None else (recorder or SessionRecorder())
+        required_records = config.estimated_records()
+        self.recorder = (
+            client.recorder
+            if client is not None
+            else (recorder or SessionRecorder(max_records=required_records))
+        )
+        if self.recorder.max_records < required_records:
+            raise ValueError(
+                "capture recorder is smaller than the estimated record requirement"
+            )
         self.client = client or DragonClient(target, self.recorder, connection_limit=1)
         self.run_id = uuid4().hex
         self._lock = Lock()

@@ -241,7 +241,11 @@ class SessionManager:
             "elapsed_ms": 0.0,
             "active_device_connections": 0,
             "device_connection_limit": 1,
-            "recorder": {"records": 0, "max_records": 2_000, "dropped_records": 0},
+            "recorder": {
+                "records": 0,
+                "max_records": config.estimated_records(),
+                "dropped_records": 0,
+            },
             "recent_records": [],
         }
 
