@@ -94,6 +94,7 @@ class ServerTests(TestCase):
         self.assertIn("Start bounded churn", html)
         self.assertIn('id="churnProfile"', html)
         self.assertIn("Choose a repeatable bounded profile", html)
+        self.assertIn('id="churnDelaySeconds" type="number" value="0.5" min="0.1" max="5" step="0.05"', html)
         self.assertIn("Copy run summary", html)
 
     def test_idle_snapshot_exposes_named_churn_profiles(self) -> None:
