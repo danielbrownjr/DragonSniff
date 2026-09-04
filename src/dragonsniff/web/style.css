@@ -91,13 +91,16 @@ input, select {
 }
 .churn-card { border-left: 4px solid var(--warn); }
 .churn-card .eyebrow { color: var(--warn); margin-bottom: 4px; }
-.churn-form { display: grid; gap: 10px; margin-top: 12px; }
+.capture-card { border-left: 4px solid var(--primary); }
+.capture-card .eyebrow { margin-bottom: 4px; }
+.churn-form, .capture-form { display: grid; gap: 10px; margin-top: 12px; }
 .profile-field { max-width: 320px; }
 .profile-field select { display: block; width: 100%; margin: 5px 0 3px; }
 .profile-field span { display: block; font-size: .72rem; }
 .config-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; }
 .config-grid label { margin: 0; }
 .config-grid input { width: 100%; margin-top: 5px; }
+.capture-config-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .churn-metrics {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

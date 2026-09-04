@@ -8,12 +8,19 @@ const payloadTools = window.DragonSniffPayload;
 let requestInFlight = false;
 let currentSnapshot = null;
 let churnProfiles = {};
+let captureProfiles = {};
 
 const churnFields = {
   cycles: "#churnCycles",
   observe_seconds: "#churnObserveSeconds",
   max_events: "#churnMaxEvents",
   delay_seconds: "#churnDelaySeconds",
+};
+
+const captureFields = {
+  duration_seconds: "#captureDurationSeconds",
+  state_interval_seconds: "#captureStateInterval",
+  health_interval_seconds: "#captureHealthInterval",
 };
 
 function setChurnConfiguration(configuration) {
@@ -35,6 +42,28 @@ function syncChurnProfiles(profiles, selectedProfile, configuration) {
   selector.value = selectedProfile in profiles ? selectedProfile : "Custom";
   setChurnConfiguration(
     payloadTools.churnProfileConfiguration(profiles, selectedProfile) || configuration,
+  );
+}
+
+function setCaptureConfiguration(configuration) {
+  Object.entries(captureFields).forEach(([name, selector]) => {
+    document.querySelector(selector).value = configuration[name];
+  });
+}
+
+function syncCaptureProfiles(profiles, selectedProfile, configuration) {
+  if (!profiles || Object.keys(captureProfiles).length) return;
+  captureProfiles = profiles;
+  const selector = document.querySelector("#captureProfile");
+  Object.keys(profiles).forEach((name) => {
+    const option = document.createElement("option");
+    option.value = name;
+    option.textContent = name;
+    selector.append(option);
+  });
+  selector.value = selectedProfile in profiles ? selectedProfile : "Custom";
+  setCaptureConfiguration(
+    payloadTools.captureProfileConfiguration(profiles, selectedProfile) || configuration,
   );
 }
 
@@ -121,6 +150,21 @@ async function copyChurn(kind, button) {
   }
 }
 
+async function copyCapture(button) {
+  const value = payloadTools.captureSummaryText(currentSnapshot?.capture);
+  if (value === null) {
+    copyFeedback(button, "Nothing to copy", true);
+    return;
+  }
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error("clipboard unavailable");
+    await navigator.clipboard.writeText(value);
+    copyFeedback(button, "Copied");
+  } catch (error) {
+    copyFeedback(button, "Copy failed", true);
+  }
+}
+
 function renderLimits(limits) {
   const list = document.querySelector("#limits");
   list.replaceChildren();
@@ -165,7 +209,7 @@ function renderChurn(snapshot) {
   const running = state === "running";
   const stopping = state === "stopping";
   const normalActive = !["idle", "stopped"].includes(snapshot.session_state);
-  currentSnapshot = snapshot;
+  const captureActive = ["running", "stopping"].includes(snapshot.capture?.state);
   text("#churnState", state);
   document.querySelector("#churnState").dataset.status = state;
   text("#churnProgress", `${churn.current_cycle || 0} / ${churn.total_cycles || churn.configuration?.cycles || 0}`);
@@ -195,18 +239,55 @@ function renderChurn(snapshot) {
   const inputs = document.querySelectorAll("#churnForm input");
   inputs.forEach((input) => { input.disabled = running || stopping; });
   document.querySelector("#churnProfile").disabled = running || stopping;
-  document.querySelector("#churnStartButton").disabled = running || stopping || normalActive;
+  document.querySelector("#churnStartButton").disabled = running || stopping || normalActive || captureActive;
   document.querySelector("#churnStopButton").disabled = !running;
   document.querySelector("#copyChurnSummary").disabled = payloadTools.churnSummaryText(churn) === null;
   document.querySelector("#copyChurnHealth").disabled = payloadTools.churnHealthText(churn) === null;
 }
 
+function renderCapture(snapshot) {
+  const capture = snapshot.capture || {};
+  syncCaptureProfiles(capture.profiles, capture.profile, capture.configuration);
+  const state = capture.state || "idle";
+  const running = state === "running";
+  const stopping = state === "stopping";
+  const normalActive = !["idle", "stopped"].includes(snapshot.session_state);
+  const churnActive = ["running", "stopping"].includes(snapshot.churn?.state);
+  text("#captureState", state);
+  document.querySelector("#captureState").dataset.status = state;
+  text("#captureSamples", capture.samples_completed || 0);
+  text("#captureStateFailures", capture.state_failures || 0);
+  text("#captureHealthFailures", capture.health_failures || 0);
+  text("#captureEstimate", `${capture.recorder?.records || 0} / ${capture.estimated_records || 0}`);
+  text("#captureElapsed", `${((capture.elapsed_ms || 0) / 1000).toFixed(1)} s`);
+  const bootStatus = capture.boot_id_changed
+    ? `changed: ${capture.initial_boot_id || "unknown"} -> ${capture.latest_boot_id || "unknown"}`
+    : (capture.latest_boot_id || "not observed");
+  text("#captureBoot", bootStatus);
+  document.querySelector("#captureBoot").dataset.status = capture.boot_id_changed
+    ? "error"
+    : (capture.latest_boot_id ? "available" : "idle");
+  text("#captureLatestState", capture.latest_state ? pretty(capture.latest_state) : "No state observation");
+  text("#captureLatestHealth", capture.latest_health ? pretty(capture.latest_health) : "No health observation");
+
+  document.querySelectorAll("#captureForm input").forEach((input) => {
+    input.disabled = running || stopping;
+  });
+  document.querySelector("#captureProfile").disabled = running || stopping;
+  document.querySelector("#captureStartButton").disabled = running || stopping || normalActive || churnActive;
+  document.querySelector("#captureStopButton").disabled = !running;
+  document.querySelector("#copyCaptureSummary").disabled = payloadTools.captureSummaryText(capture) === null;
+}
+
 function render(snapshot) {
+  currentSnapshot = snapshot;
   const sse = snapshot.sse || {};
   const sseTiming = sse.details?.elapsed_ms === undefined ? "" : ` / ${sse.details.elapsed_ms.toFixed(1)} ms`;
   const globalState = snapshot.active_mode === "churn"
     ? (snapshot.churn?.state || "idle")
-    : (snapshot.session_state || "idle");
+    : snapshot.active_mode === "capture"
+      ? (snapshot.capture?.state || "idle")
+      : (snapshot.session_state || "idle");
   text("#sessionBadge", globalState);
   document.querySelector("#sessionBadge").dataset.status = globalState;
   text("#targetValue", snapshot.target || "not connected");
@@ -224,13 +305,15 @@ function render(snapshot) {
   const active = !["idle", "stopped"].includes(snapshot.session_state);
   const stopping = snapshot.session_state === "stopping";
   const churnActive = ["running", "stopping"].includes(snapshot.churn?.state);
+  const captureActive = ["running", "stopping"].includes(snapshot.capture?.state);
   const streamActive = !stopping && ["connecting", "open"].includes(sse.state);
-  document.querySelector("#connectForm button[type='submit']").disabled = stopping || churnActive;
+  document.querySelector("#connectForm button[type='submit']").disabled = stopping || churnActive || captureActive;
   document.querySelector("#refreshButton").disabled = !active || stopping;
   document.querySelector("#reconnectButton").disabled = !active || stopping;
   document.querySelector("#stopEventsButton").disabled = !streamActive;
   document.querySelector("#stopButton").disabled = !active || stopping;
   renderChurn(snapshot);
+  renderCapture(snapshot);
 }
 
 async function update() {
@@ -273,6 +356,34 @@ if (window.location.protocol === "file:") {
   document.querySelector("#stopEventsButton").addEventListener("click", () => act("/local/v1/session/stop-events"));
   document.querySelector("#stopButton").addEventListener("click", () => act("/local/v1/session/stop"));
   const churnNotice = document.querySelector("#churnNotice");
+  const captureNotice = document.querySelector("#captureNotice");
+  document.querySelector("#captureProfile").addEventListener("change", (event) => {
+    const configuration = payloadTools.captureProfileConfiguration(
+      captureProfiles,
+      event.currentTarget.value,
+    );
+    if (configuration) setCaptureConfiguration(configuration);
+  });
+  document.querySelectorAll("#captureForm input").forEach((input) => {
+    input.addEventListener("input", () => {
+      document.querySelector("#captureProfile").value = "Custom";
+    });
+  });
+  document.querySelector("#captureForm").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const configuration = {
+      duration_seconds: Number(document.querySelector("#captureDurationSeconds").value),
+      state_interval_seconds: Number(document.querySelector("#captureStateInterval").value),
+      health_interval_seconds: Number(document.querySelector("#captureHealthInterval").value),
+    };
+    act("/local/v1/capture/start", {target: targetInput.value.trim(), configuration}, captureNotice);
+  });
+  document.querySelector("#captureStopButton").addEventListener("click", () => {
+    act("/local/v1/capture/stop", {}, captureNotice);
+  });
+  document.querySelector("#copyCaptureSummary").addEventListener("click", (event) => {
+    copyCapture(event.currentTarget);
+  });
   document.querySelector("#churnProfile").addEventListener("change", (event) => {
     const configuration = payloadTools.churnProfileConfiguration(
       churnProfiles,

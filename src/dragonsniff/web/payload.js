@@ -46,5 +46,36 @@
     return Object.fromEntries(fields.map((field) => [field, configuration[field]]));
   }
 
-  return {payloadText, churnSummaryText, churnHealthText, churnProfileConfiguration};
+  function captureSummaryText(capture) {
+    if (!capture || !capture.run_id) return null;
+    const fields = [
+      "run_id", "state", "target", "profile", "configuration", "estimated_records",
+      "samples_completed", "state_successes", "state_failures", "health_successes",
+      "health_failures", "initial_boot_id", "latest_boot_id", "boot_id_changed",
+      "boot_id_changes", "cleanup_complete", "failure", "start_timestamp",
+      "end_timestamp", "elapsed_ms",
+    ];
+    const summary = {};
+    fields.forEach((name) => { summary[name] = capture[name]; });
+    return JSON.stringify(summary, null, 2);
+  }
+
+  function captureProfileConfiguration(profiles, name) {
+    const configuration = profiles?.[name];
+    if (!configuration || typeof configuration !== "object") return null;
+    const fields = [
+      "duration_seconds", "state_interval_seconds", "health_interval_seconds",
+    ];
+    if (!fields.every((field) => typeof configuration[field] === "number")) return null;
+    return Object.fromEntries(fields.map((field) => [field, configuration[field]]));
+  }
+
+  return {
+    payloadText,
+    churnSummaryText,
+    churnHealthText,
+    churnProfileConfiguration,
+    captureSummaryText,
+    captureProfileConfiguration,
+  };
 });

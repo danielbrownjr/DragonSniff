@@ -3,6 +3,8 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 const {
+  captureProfileConfiguration,
+  captureSummaryText,
   churnHealthText,
   churnProfileConfiguration,
   churnSummaryText,
@@ -87,4 +89,44 @@ test("named churn profiles populate exact editable configurations", () => {
   const selected = churnProfileConfiguration(profiles, "Baseline");
   selected.cycles = 4;
   assert.equal(profiles.Baseline.cycles, 3);
+});
+
+test("capture summary copies bounded run evidence", () => {
+  const capture = {
+    run_id: "capture-1",
+    state: "completed",
+    target: "http://dragon.local",
+    profile: "Smoke",
+    configuration: {duration_seconds: 120},
+    estimated_records: 272,
+    samples_completed: 121,
+    state_successes: 121,
+    state_failures: 0,
+    health_successes: 14,
+    health_failures: 0,
+    boot_id_changed: false,
+    cleanup_complete: true,
+  };
+
+  const copied = JSON.parse(captureSummaryText(capture));
+  assert.equal(copied.run_id, "capture-1");
+  assert.equal(copied.samples_completed, 121);
+  assert.equal(copied.cleanup_complete, true);
+  assert.equal(captureSummaryText({state: "idle"}), null);
+});
+
+test("named capture profiles populate exact editable schedules", () => {
+  const profiles = {
+    Smoke: {duration_seconds: 120, state_interval_seconds: 1, health_interval_seconds: 10},
+    Soak: {duration_seconds: 900, state_interval_seconds: 2, health_interval_seconds: 30},
+    Extended: {duration_seconds: 1800, state_interval_seconds: 5, health_interval_seconds: 60},
+  };
+
+  assert.deepEqual(captureProfileConfiguration(profiles, "Smoke"), profiles.Smoke);
+  assert.deepEqual(captureProfileConfiguration(profiles, "Soak"), profiles.Soak);
+  assert.deepEqual(captureProfileConfiguration(profiles, "Extended"), profiles.Extended);
+  assert.equal(captureProfileConfiguration(profiles, "Custom"), null);
+  const selected = captureProfileConfiguration(profiles, "Smoke");
+  selected.duration_seconds = 60;
+  assert.equal(profiles.Smoke.duration_seconds, 120);
 });

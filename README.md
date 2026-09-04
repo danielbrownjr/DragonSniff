@@ -20,6 +20,7 @@ DragonSniff should eventually make it easy to:
 - **Poke it with a stick: Controlled communications testing** — deliberately connect, disconnect, reconnect, and exercise bounded SSE-client churn.
 - **Watch its vital signs: Health history** — record uptime, boot identity, heap statistics, stack headroom, connection counts, and other truthful health fields exposed by the device.
 - **Bag the evidence: Session export** — preserve timestamped raw payloads and connection events in a machine-readable diagnostic session for later analysis.
+- **Watch the dragon breathe: Passive thermal capture** — collect bounded state and health snapshots while a controller is exercised through its normal interface.
 
 ## The fence around the dragon pen
 
@@ -103,6 +104,16 @@ Health is sampled before the run, after a successful connection, after disconnec
 **Stop churn** cancels future cycles, closes the active churn-owned stream, and preserves the evidence already collected. The UI remains `stopping` until the controller, stream worker, and both local connection permits are actually clean; only then does the run become `cancelled`. Completed, cancelled, and failed churn evidence uses the existing **Bag evidence as JSONL** export.
 
 See [Bounded SSE churn runner](docs/churn-runner.md) for lifecycle, evidence, and interpretation details.
+
+## Watch the dragon breathe
+
+Passive capture collects repeatable thermal-controller evidence without controlling the device. It reads device information at the boundaries, polls `/api/v2/state` at a bounded cadence, samples `/api/v2/health` less frequently, and preserves every raw response in the existing JSONL evidence stream. It never opens SSE or sends a device mutation.
+
+The named profiles are **Smoke** (2 minutes), **Soak** (15 minutes), and **Extended** (30 minutes). Every schedule is validated against both field bounds and the retained-record budget, so a nominal capture cannot silently churn its own beginning out of memory. Normal observation, churn, and passive capture are mutually exclusive.
+
+For PID release-candidate comparisons, control DragonBreath through its ordinary supported interface, run the same DragonSniff profile and physical conditions against both builds, and retain each JSONL export. DragonSniff records the evidence but does not invent pass/fail conclusions about tuning or thermal safety.
+
+See [Passive thermal telemetry capture](docs/thermal-capture.md) for the evidence model, profiles, limits, and comparison workflow.
 
 Run the tests without installing the package:
 
