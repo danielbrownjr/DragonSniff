@@ -120,11 +120,13 @@ test("named capture profiles populate exact editable schedules", () => {
     Smoke: {duration_seconds: 120, state_interval_seconds: 1, health_interval_seconds: 10},
     Soak: {duration_seconds: 900, state_interval_seconds: 2, health_interval_seconds: 30},
     Extended: {duration_seconds: 1800, state_interval_seconds: 5, health_interval_seconds: 60},
+    "Long Haul": {duration_seconds: 28800, state_interval_seconds: 5, health_interval_seconds: 60},
   };
 
   assert.deepEqual(captureProfileConfiguration(profiles, "Smoke"), profiles.Smoke);
   assert.deepEqual(captureProfileConfiguration(profiles, "Soak"), profiles.Soak);
   assert.deepEqual(captureProfileConfiguration(profiles, "Extended"), profiles.Extended);
+  assert.deepEqual(captureProfileConfiguration(profiles, "Long Haul"), profiles["Long Haul"]);
   assert.equal(captureProfileConfiguration(profiles, "Custom"), null);
   const selected = captureProfileConfiguration(profiles, "Smoke");
   selected.duration_seconds = 60;

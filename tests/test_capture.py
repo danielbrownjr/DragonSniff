@@ -44,6 +44,7 @@ class CaptureConfigTests(TestCase):
                 "Smoke": CaptureConfig(120.0, 1.0, 10.0),
                 "Soak": CaptureConfig(900.0, 2.0, 30.0),
                 "Extended": CaptureConfig(1_800.0, 5.0, 60.0),
+                "Long Haul": CaptureConfig(28_800.0, 5.0, 60.0),
             },
         )
         for config in CaptureConfig.profiles().values():
@@ -55,6 +56,9 @@ class CaptureConfigTests(TestCase):
     def test_profile_name_tracks_exact_profile_and_custom_edits(self) -> None:
         self.assertEqual(CaptureConfig().profile_name(), "Smoke")
         self.assertEqual(CaptureConfig(900.0, 2.0, 30.0).profile_name(), "Soak")
+        self.assertEqual(
+            CaptureConfig(28_800.0, 5.0, 60.0).profile_name(), "Long Haul"
+        )
         self.assertEqual(CaptureConfig(600.0, 2.0, 30.0).profile_name(), "Custom")
 
     def test_rejects_invalid_unknown_and_record_overflow_schedules(self) -> None:
@@ -65,14 +69,35 @@ class CaptureConfigTests(TestCase):
             {"duration_seconds": True},
             {"sse": True},
             {
-                "duration_seconds": 3_600,
+                "duration_seconds": 43_200,
                 "state_interval_seconds": 0.5,
                 "health_interval_seconds": 5,
             },
+            {"duration_seconds": 43_201},
         )
         for value in invalid:
             with self.subTest(value=value), self.assertRaises(ValueError):
                 CaptureConfig.from_value(value)
+
+    def test_long_haul_runner_sizes_recorder_to_retain_complete_capture(self) -> None:
+        config = CaptureConfig.profiles()["Long Haul"]
+        runner = CaptureRunner(parse_target("dragon.local"), config)
+
+        self.assertEqual(runner.recorder.max_records, config.estimated_records())
+        self.assertGreater(config.estimated_records(), 2_000)
+        self.assertLessEqual(
+            config.estimated_records(), CaptureConfig.MAX_ESTIMATED_RECORDS
+        )
+
+    def test_rejects_explicit_recorder_smaller_than_capture_schedule(self) -> None:
+        config = CaptureConfig.profiles()["Long Haul"]
+
+        with self.assertRaisesRegex(ValueError, "recorder is smaller"):
+            CaptureRunner(
+                parse_target("dragon.local"),
+                config,
+                recorder=SessionRecorder(max_records=2_000),
+            )
 
 
 class CaptureRunnerTests(TestCase):

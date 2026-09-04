@@ -128,6 +128,11 @@ class ServerTests(TestCase):
         })
         self.assertEqual(capture["profiles"]["Soak"]["duration_seconds"], 900.0)
         self.assertEqual(capture["profiles"]["Extended"]["duration_seconds"], 1800.0)
+        self.assertEqual(capture["profiles"]["Long Haul"], {
+            "duration_seconds": 28_800.0,
+            "state_interval_seconds": 5.0,
+            "health_interval_seconds": 60.0,
+        })
 
     def test_invalid_target_is_rejected_without_starting_a_session(self) -> None:
         with LocalServerFixture() as local:
@@ -300,10 +305,11 @@ class ServerTests(TestCase):
                 {"health_interval_seconds": 1},
                 {"concurrency": 2},
                 {
-                    "duration_seconds": 3600,
+                    "duration_seconds": 43_200,
                     "state_interval_seconds": 0.5,
                     "health_interval_seconds": 5,
                 },
+                {"duration_seconds": 43_201},
             )
             for configuration in invalid_values:
                 status, body, _ = local.request(
