@@ -54,6 +54,12 @@ The existing bounded `SessionRecorder` and JSONL export are reused. Raw payloads
 - cancellation or controller failure
 - worker, permit, and terminal cleanup outcome
 
+After the final cycle, DragonSniff also waits one bounded second and records an
+`after_run_settled` health sample. The immediate sample preserves teardown timing
+evidence; the delayed sample gives asynchronous device-side SSE cleanup a chance to
+become observable without claiming that every Dragon must reclaim a client within a
+universal deadline.
+
 The compact copy action is derived from the stored run state. The raw-health copy action uses the stored raw payload, not text scraped from the rendered page.
 
 ## Capacity and slot interpretation

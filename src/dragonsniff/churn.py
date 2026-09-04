@@ -134,6 +134,7 @@ class ChurnRunner:
     """Run one sequential, explicitly bounded SSE churn exercise."""
 
     TERMINAL_STATES = {"completed", "cancelled", "failed"}
+    POST_RUN_SETTLE_SECONDS = 1.0
 
     def __init__(
         self,
@@ -165,6 +166,7 @@ class ChurnRunner:
             "profile": config.profile_name(),
             "profiles": config.profile_snapshots(),
             "bounds": config.bounds(),
+            "post_run_settle_seconds": self.POST_RUN_SETTLE_SECONDS,
             "current_cycle": 0,
             "total_cycles": config.cycles,
             "active_churn_connections": 0,
@@ -203,6 +205,7 @@ class ChurnRunner:
                 configuration=self.config.snapshot(),
                 profile=self.config.profile_name(),
                 bounds=self.config.bounds(),
+                post_run_settle_seconds=self.POST_RUN_SETTLE_SECONDS,
             )
             self._state["start_timestamp"] = started["timestamp"]
             thread = Thread(
@@ -249,7 +252,17 @@ class ChurnRunner:
             if not self._cancel.is_set():
                 with self._lock:
                     final_cycle = self._state["current_cycle"]
-                self._sample_health("after_run", cycle=final_cycle)
+                self.recorder.append(
+                    "churn_post_run_settle_started",
+                    run_id=self.run_id,
+                    cycle=final_cycle,
+                    owner="churn",
+                    duration_seconds=self.POST_RUN_SETTLE_SECONDS,
+                )
+                if self._cancel.wait(self.POST_RUN_SETTLE_SECONDS):
+                    outcome = "cancelled"
+                else:
+                    self._sample_health("after_run_settled", cycle=final_cycle)
         except Exception as exc:
             outcome = "cancelled" if self._cancel.is_set() else "failed"
             details = {"type": type(exc).__name__, "message": str(exc)}
@@ -547,6 +560,7 @@ class ChurnRunner:
             "state",
             "target",
             "configuration",
+            "post_run_settle_seconds",
             "current_cycle",
             "total_cycles",
             "successful_connections",

@@ -129,7 +129,16 @@ class ChurnRunnerTests(TestCase):
         self.assertIn('"future":{"value":true}', snapshot["latest_health"]["raw_payload"])
         kinds = [record["kind"] for record in runner.recorder.snapshot()]
         self.assertIn("churn_deliberate_disconnect", kinds)
+        self.assertIn("churn_post_run_settle_started", kinds)
         self.assertIn("churn_run_completed", kinds)
+        sample_points = [
+            record["sample_point"]
+            for record in runner.recorder.snapshot()
+            if record["kind"] == "churn_health_sample"
+        ]
+        self.assertIn("after_disconnect", sample_points)
+        self.assertIn("after_run_settled", sample_points)
+        self.assertEqual(snapshot["post_run_settle_seconds"], 1.0)
         self.assert_clean(runner)
 
     def test_multiple_cycles_remain_sequential_and_release_every_permit(self) -> None:
@@ -309,7 +318,7 @@ class ChurnRunnerTests(TestCase):
             if record["kind"] == "churn_health_sample"
         ]
         self.assertNotIn("after_disconnect", sample_points)
-        self.assertNotIn("after_run", sample_points)
+        self.assertNotIn("after_run_settled", sample_points)
         self.assert_clean(runner)
 
     def test_cancellation_during_connection_establishment_stays_truthful(self) -> None:
