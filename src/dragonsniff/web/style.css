@@ -79,7 +79,7 @@ main { display: grid; gap: 12px; }
 .connect-card { display: grid; gap: 12px; }
 label { display: block; margin-bottom: 5px; color: var(--muted-foreground); font-size: .8rem; }
 .control-row, .actions { display: flex; flex-wrap: wrap; gap: 7px; }
-input {
+input, select {
   flex: 1 1 280px;
   min-width: 0;
   color: inherit;
@@ -91,10 +91,16 @@ input {
 }
 .churn-card { border-left: 4px solid var(--warn); }
 .churn-card .eyebrow { color: var(--warn); margin-bottom: 4px; }
-.churn-form { display: grid; gap: 10px; margin-top: 12px; }
+.capture-card { border-left: 4px solid var(--primary); }
+.capture-card .eyebrow { margin-bottom: 4px; }
+.churn-form, .capture-form { display: grid; gap: 10px; margin-top: 12px; }
+.profile-field { max-width: 320px; }
+.profile-field select { display: block; width: 100%; margin: 5px 0 3px; }
+.profile-field span { display: block; font-size: .72rem; }
 .config-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; }
 .config-grid label { margin: 0; }
 .config-grid input { width: 100%; margin-top: 5px; }
+.capture-config-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .churn-metrics {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -105,6 +111,45 @@ input {
 .churn-metrics span { display: block; color: var(--muted-foreground); font-size: .68rem; text-transform: uppercase; letter-spacing: .07em; }
 .churn-metrics strong { display: block; margin-top: 5px; overflow-wrap: anywhere; font: 700 .8rem ui-monospace, SFMono-Regular, Consolas, monospace; }
 .churn-evidence { margin-top: 12px; }
+.thermal-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 210px;
+  gap: 16px;
+  align-items: center;
+  margin-top: 12px;
+  padding: 13px 15px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--primary) 5%, var(--background));
+}
+.thermal-copy .eyebrow { margin: 0 0 3px; font-size: .66rem; }
+.thermal-copy h3 { margin-bottom: 10px; color: var(--foreground); font-size: .82rem; }
+.thermal-readouts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
+.thermal-readouts > div { min-width: 0; padding-right: 9px; border-right: 1px solid var(--border); }
+.thermal-readouts > div:last-child { padding-right: 0; border-right: 0; }
+.thermal-readouts span, .pid-label {
+  display: block;
+  color: var(--muted-foreground);
+  font-size: .66rem;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.thermal-readouts strong {
+  display: block;
+  margin-top: 3px;
+  font: 700 clamp(1.15rem, 3vw, 1.75rem) ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+.pid-gauge { position: relative; display: grid; justify-items: center; min-width: 0; }
+.pid-gauge svg { display: block; width: 150px; height: 90px; margin-top: -2px; overflow: visible; }
+.pid-gauge svg text { fill: var(--muted-foreground); font: 8px ui-monospace, SFMono-Regular, Consolas, monospace; }
+.gauge-track, .gauge-arc { fill: none; stroke-width: 11; stroke-linecap: round; }
+.gauge-track { stroke: var(--muted); }
+.gauge-arc { stroke: var(--primary); stroke-dasharray: 0 100; transition: stroke-dasharray .25s ease; }
+.gauge-needle { stroke: var(--foreground); stroke-width: 2.2; stroke-linecap: round; transform: rotate(-90deg); transform-origin: 80px 82px; transition: transform .25s ease; }
+.gauge-hub { fill: var(--foreground); }
+.pid-gauge > strong { margin-top: -25px; font: 800 1.35rem ui-monospace, SFMono-Regular, Consolas, monospace; }
+.pid-detail { margin-top: 2px; color: var(--muted-foreground); font-size: .68rem; text-align: center; }
 button, .button-link {
   display: inline-flex;
   min-height: 30px;
@@ -121,7 +166,7 @@ button, .button-link {
 }
 button:hover, .button-link:hover { background: color-mix(in srgb, var(--foreground) 6%, var(--secondary)); }
 button.primary { color: var(--primary-foreground); background: var(--primary); border-color: transparent; font-weight: 600; }
-button:focus-visible, .button-link:focus-visible, input:focus-visible, summary:focus-visible {
+button:focus-visible, .button-link:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 2px;
 }
@@ -176,4 +221,6 @@ footer { padding: 24px 0 42px; color: var(--muted-foreground); text-align: cente
   header { align-items: start; flex-direction: column; padding-top: 26px; }
   .summary-grid, .endpoint-grid, .split, .config-grid, .churn-metrics { grid-template-columns: minmax(0, 1fr); }
   .control-row > * { width: 100%; }
+  .thermal-panel { grid-template-columns: minmax(0, 1fr); }
+  .thermal-readouts { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }

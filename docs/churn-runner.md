@@ -30,6 +30,16 @@ Comment-only SSE blocks are retained as `sse_comment` transport evidence but do 
 
 The runner has no infinite mode and no concurrency option. It owns at most one SSE stream. Its `DragonClient` still has the existing two-permit local budget so a health request can be sampled while that stream is open. Normal observation and churn are mutually exclusive and the backend enforces that boundary.
 
+## Repeatable profiles
+
+The UI provides three named starting points, all within the same existing hard bounds:
+
+- **Baseline:** 3 cycles, 2 seconds per cycle, 3 application events, 0.5-second delay.
+- **Extended:** 10 cycles, 5 seconds per cycle, 5 application events, 0.25-second delay.
+- **Stress:** 20 cycles, 10 seconds per cycle, 10 application events, 0.1-second delay.
+
+Selecting a profile fills the ordinary configuration fields. Editing any field makes the run Custom; it does not bypass server-side bounds. For before/after evidence, run Baseline, Extended, and Stress against DragonBreath 1.1.14, retain the JSONL files, then repeat the same sequence against the PID build. Compare connection, cleanup, health, heap, uptime, and boot-ID observations. This workflow does not assess PID tuning or thermal behavior.
+
 ## Evidence and export
 
 The existing bounded `SessionRecorder` and JSONL export are reused. Raw payloads and unknown fields are not normalized away. Evidence includes:

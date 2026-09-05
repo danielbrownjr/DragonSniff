@@ -20,6 +20,7 @@ DragonSniff should eventually make it easy to:
 - **Poke it with a stick: Controlled communications testing** — deliberately connect, disconnect, reconnect, and exercise bounded SSE-client churn.
 - **Watch its vital signs: Health history** — record uptime, boot identity, heap statistics, stack headroom, connection counts, and other truthful health fields exposed by the device.
 - **Bag the evidence: Session export** — preserve timestamped raw payloads and connection events in a machine-readable diagnostic session for later analysis.
+- **Watch the dragon breathe: Passive thermal capture** — collect bounded state and health snapshots while a controller is exercised through its normal interface.
 
 ## The fence around the dragon pen
 
@@ -88,6 +89,14 @@ The bounded churn runner deliberately repeats the read-only SSE lifecycle agains
 
 The conservative defaults are three cycles, two seconds or three application events per connection, and a half-second delay. The service enforces hard bounds of 1–20 cycles, 0.25–15 seconds of observation, 1–25 events, and 0.1–5 seconds between cycles. Zero-delay storms, infinite runs, concurrency controls, arbitrary methods, and arbitrary paths are not available.
 
+The profile selector makes comparative runs repeatable while leaving every value visible and editable:
+
+- **Baseline:** 3 cycles, 2 seconds maximum observation per cycle, 3 application events, 0.5-second delay.
+- **Extended:** 10 cycles, 5 seconds maximum observation per cycle, 5 application events, 0.25-second delay.
+- **Stress:** 20 cycles, 10 seconds maximum observation per cycle, 10 application events, 0.1-second delay.
+
+Editing a populated value switches the selector to **Custom**. Stress is still bounded and sequential; it does not increase concurrency. A useful comparison workflow is to run Baseline, Extended, then Stress against DragonBreath 1.1.14, preserve each JSONL export, and repeat the same profiles against a later PID build. The resulting evidence compares communications and resource behavior only; DragonSniff does not validate PID tuning or thermal-control quality.
+
 Capacity rejection is evidence, not an automatic run failure. DragonBreath currently returns HTTP 503 when its SSE slots are full, but DragonSniff does not treat that product-specific capacity as a universal Dragon limit. Status, timing, raw body, parsed JSON when valid, run ID, cycle, and request identity remain in the same JSONL evidence stream as normal observation.
 
 Health is sampled before the run, after a successful connection, after disconnect or a rejected attempt, and immediately after the run. Completed and cancelled runs then enter a bounded settlement phase with health checkpoints at one, two, five, and ten seconds. When the optional `sse_clients` field exists, settlement ends early after the observed count returns to its pre-run baseline; the baseline need not be zero because another legitimate client may exist. If that field is absent, DragonSniff may still retain one delayed heap sample but does not invent a client-recovery conclusion. Settlement timeout is evidence, not an automatic run failure. Every raw response is retained. Selected optional fields such as boot ID, uptime, heap measurements, task headroom, and SSE diagnostics are surfaced only when present. Missing health or unknown fields do not fail a run. A boot-ID change is reported as a change in observed evidence, not labeled a crash or assigned a cause.
@@ -95,6 +104,16 @@ Health is sampled before the run, after a successful connection, after disconnec
 **Stop churn** cancels future cycles, closes the active churn-owned stream, and preserves the evidence already collected. Completed and cancelled runs may report `settling` while the bounded device-visible recovery evidence is collected. The UI does not claim terminal cleanup until the controller, stream worker, and both local connection permits are actually clean; only then does the run become `completed` or `cancelled`. Completed, cancelled, and failed churn evidence uses the existing **Bag evidence as JSONL** export.
 
 See [Bounded SSE churn runner](docs/churn-runner.md) for lifecycle, evidence, and interpretation details.
+
+## Watch the dragon breathe
+
+Passive capture collects repeatable thermal-controller evidence without controlling the device. It reads device information at the boundaries, polls `/api/v2/state` at a bounded cadence, samples `/api/v2/health` less frequently, and preserves every raw response in the existing JSONL evidence stream. It never opens SSE or sends a device mutation.
+
+The named profiles are **Smoke** (2 minutes), **Soak** (15 minutes), **Extended** (30 minutes), and **Long Haul** (8 hours). Every schedule is validated against both field bounds and the retained-record budget, and each capture receives a recorder sized to its validated schedule, so a nominal capture cannot silently churn its own beginning out of memory. Normal observation, churn, and passive capture are mutually exclusive.
+
+For PID release-candidate comparisons, control DragonBreath through its ordinary supported interface, run the same DragonSniff profile and physical conditions against both builds, and retain each JSONL export. DragonSniff records the evidence but does not invent pass/fail conclusions about tuning or thermal safety.
+
+See [Passive thermal telemetry capture](docs/thermal-capture.md) for the evidence model, profiles, limits, and comparison workflow.
 
 Run the tests without installing the package:
 

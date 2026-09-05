@@ -52,6 +52,72 @@
       <article class="metric"><span>Session records</span><strong id="recordCount">0</strong></article>
     </section>
 
+    <section class="card capture-card" aria-labelledby="capture-heading">
+      <div class="endpoint-heading">
+        <div>
+          <p class="eyebrow">Passive controller evidence</p>
+          <h2 id="capture-heading">Watch the dragon breathe</h2>
+          <p>Poll fixed read-only state and health endpoints on a bounded schedule. Capture never opens SSE and never sends a request that can mutate the device.</p>
+        </div>
+        <span id="captureState" class="endpoint-state" data-status="idle">idle</span>
+      </div>
+      <form id="captureForm" class="capture-form">
+        <label class="profile-field" for="captureProfile">Capture profile
+          <select id="captureProfile">
+            <option value="Custom">Custom</option>
+          </select>
+          <span>Choose a repeatable schedule, then adjust any visible value if needed.</span>
+        </label>
+        <div class="config-grid capture-config-grid">
+          <label>Duration seconds<input id="captureDurationSeconds" type="number" value="120" min="1" max="43200" step="1" required></label>
+          <label>State interval seconds<input id="captureStateInterval" type="number" value="1" min="0.5" max="60" step="0.5" required></label>
+          <label>Health interval seconds<input id="captureHealthInterval" type="number" value="10" min="5" max="300" step="1" required></label>
+        </div>
+        <div class="actions">
+          <button id="captureStartButton" type="submit" class="primary">Start passive capture</button>
+          <button id="captureStopButton" type="button" disabled>Stop capture</button>
+          <button id="copyCaptureSummary" type="button" class="copy-button" disabled>Copy capture summary</button>
+          <span id="captureCopyFeedback" class="copy-feedback" role="status" aria-live="polite"></span>
+        </div>
+      </form>
+      <p id="captureNotice" class="notice" role="status" aria-live="polite"></p>
+      <div class="churn-metrics" aria-label="Capture run summary">
+        <div><span>State samples</span><strong id="captureSamples">0</strong></div>
+        <div><span>State failures</span><strong id="captureStateFailures">0</strong></div>
+        <div><span>Health failures</span><strong id="captureHealthFailures">0</strong></div>
+        <div><span>Record estimate</span><strong id="captureEstimate">0</strong></div>
+        <div><span>Elapsed</span><strong id="captureElapsed">0.0 s</strong></div>
+        <div><span>Boot ID</span><strong id="captureBoot">not observed</strong></div>
+      </div>
+      <section class="thermal-panel" aria-labelledby="thermal-heading">
+        <div class="thermal-copy">
+          <p class="eyebrow">Latest state sample</p>
+          <h3 id="thermal-heading">Thermals</h3>
+          <div class="thermal-readouts">
+            <div><span>Chamber</span><strong id="thermalChamber">—</strong></div>
+            <div><span>Target</span><strong id="thermalTarget">—</strong></div>
+            <div><span>PTC</span><strong id="thermalPtc">—</strong></div>
+          </div>
+        </div>
+        <div id="pidGauge" class="pid-gauge" role="meter" aria-label="PID output unavailable" aria-valuemin="0" aria-valuemax="100">
+          <span class="pid-label">PID output</span>
+          <svg viewBox="0 0 160 96" aria-hidden="true">
+            <path class="gauge-track" pathLength="100" d="M16 82 A64 64 0 0 1 144 82"></path>
+            <path id="pidGaugeArc" class="gauge-arc" pathLength="100" d="M16 82 A64 64 0 0 1 144 82"></path>
+            <line id="pidGaugeNeedle" class="gauge-needle" x1="80" y1="82" x2="80" y2="32"></line>
+            <circle class="gauge-hub" cx="80" cy="82" r="5"></circle>
+            <text x="13" y="94">0</text><text x="75" y="18">50</text><text x="136" y="94">100</text>
+          </svg>
+          <strong id="pidOutput">—</strong>
+          <span id="pidDetail" class="pid-detail">commanded duty unavailable</span>
+        </div>
+      </section>
+      <div class="split churn-evidence">
+        <div><h3>Latest state observation</h3><pre id="captureLatestState">No state observation</pre></div>
+        <div><h3>Latest health observation</h3><pre id="captureLatestHealth">No health observation</pre></div>
+      </div>
+    </section>
+
     <section class="card churn-card" aria-labelledby="churn-heading">
       <div class="endpoint-heading">
         <div>
@@ -62,6 +128,12 @@
         <span id="churnState" class="endpoint-state" data-status="idle">idle</span>
       </div>
       <form id="churnForm" class="churn-form">
+        <label class="profile-field" for="churnProfile">Test profile
+          <select id="churnProfile">
+            <option value="Custom">Custom</option>
+          </select>
+          <span>Choose a repeatable bounded profile, then adjust any visible value if needed.</span>
+        </label>
         <div class="config-grid">
           <label>Cycles<input id="churnCycles" type="number" value="3" min="1" max="20" step="1" required></label>
           <label>Observe seconds<input id="churnObserveSeconds" type="number" value="2" min="0.25" max="15" step="0.25" required></label>
