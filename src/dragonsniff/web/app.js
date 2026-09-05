@@ -269,6 +269,7 @@ function renderCapture(snapshot) {
     : (capture.latest_boot_id ? "available" : "idle");
   text("#captureLatestState", capture.latest_state ? pretty(capture.latest_state) : "No state observation");
   text("#captureLatestHealth", capture.latest_health ? pretty(capture.latest_health) : "No health observation");
+  renderThermals(capture.latest_state);
 
   document.querySelectorAll("#captureForm input").forEach((input) => {
     input.disabled = running || stopping;
@@ -277,6 +278,40 @@ function renderCapture(snapshot) {
   document.querySelector("#captureStartButton").disabled = running || stopping || normalActive || churnActive;
   document.querySelector("#captureStopButton").disabled = !running;
   document.querySelector("#copyCaptureSummary").disabled = payloadTools.captureSummaryText(capture) === null;
+}
+
+function renderThermals(latestState) {
+  const thermal = payloadTools.thermalSnapshot(latestState);
+  const temperature = (value) => value === null || value === undefined
+    ? "—"
+    : `${value.toFixed(1)} °C`;
+  text("#thermalChamber", temperature(thermal?.chamber_c));
+  text("#thermalTarget", temperature(thermal?.target_c));
+  text("#thermalPtc", temperature(thermal?.ptc_c));
+
+  const gauge = document.querySelector("#pidGauge");
+  const arc = document.querySelector("#pidGaugeArc");
+  const needle = document.querySelector("#pidGaugeNeedle");
+  const duty = thermal?.duty_percent;
+  if (duty === null || duty === undefined) {
+    text("#pidOutput", "—");
+    text("#pidDetail", "commanded duty unavailable");
+    arc.style.strokeDasharray = "0 100";
+    needle.style.transform = "rotate(-90deg)";
+    gauge.removeAttribute("aria-valuenow");
+    gauge.setAttribute("aria-label", "PID output unavailable");
+    return;
+  }
+
+  const rounded = Number(duty.toFixed(1));
+  text("#pidOutput", `${rounded.toFixed(1)}%`);
+  arc.style.strokeDasharray = `${rounded} 100`;
+  needle.style.transform = `rotate(${(rounded * 1.8) - 90}deg)`;
+  gauge.setAttribute("aria-valuenow", String(rounded));
+  gauge.setAttribute("aria-label", `PID output ${rounded.toFixed(1)} percent`);
+  const output = thermal.output === null ? "output unknown" : thermal.output ? "output on" : "output off";
+  const constraint = thermal.constraint ? thermal.constraint.replaceAll("_", " ") : "constraint unknown";
+  text("#pidDetail", `commanded duty · ${output} · ${constraint}`);
 }
 
 function render(snapshot) {
