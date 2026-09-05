@@ -79,6 +79,8 @@ Then open exactly `http://127.0.0.1:8765` in a browser, enter an authorized loca
 dragonsniff --target dragonbreath.local
 ```
 
+The Dragon-family rail separates the dashboard, passive thermal capture, bounded churn stress, and collected evidence. Advanced display-only diagnostics live at the deliberately unadvertised `http://127.0.0.1:8765/lab` route; the lab is not an authentication boundary and does not add device controls.
+
 Use **Refresh JSON endpoints** for another serialized pass over info, state, and health. **Stop event stream** intentionally closes only SSE while leaving the observation session active. **Reconnect event stream** starts one new stream after stopping any current one. DragonSniff does not automatically retry a failed SSE stream in V1; that keeps failure evidence clear and avoids accidental churn. **Stop session** begins bounded cleanup and reports `stopping` until every worker and device-connection permit has been reclaimed; reconnect and replacement sessions remain blocked during that interval. **Bag evidence as JSONL** downloads every retained lifecycle record in arrival order.
 
 SSE has a five-second connection-establishment timeout but no application-level inactivity timeout after the stream opens. A future Dragon may have a valid quiet stream. Explicit Stop/Reconnect and real network errors still end the connection; silence alone does not. Comment-only keepalives remain diagnostic lifecycle evidence but are not counted or displayed as application events.

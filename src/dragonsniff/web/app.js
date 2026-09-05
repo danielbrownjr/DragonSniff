@@ -9,6 +9,66 @@ let requestInFlight = false;
 let currentSnapshot = null;
 let churnProfiles = {};
 let captureProfiles = {};
+let updateTimer = null;
+
+const pageCopy = {
+  dashboard: ["DragonSniff", "Sniff out one Dragon, follow the smoke, and bag the raw evidence."],
+  thermal: ["Thermal capture", "Run bounded state and health sampling with live chamber, target, PTC, and PID telemetry."],
+  churn: ["Churn stress", "Exercise repeated SSE connection lifecycles and verify that the device settles cleanly."],
+  evidence: ["Evidence", "Inspect the exact parsed and raw observations retained by this local session."],
+  lab: ["Super Secret Squirrel Laboratory", "Expert display controls and the complete raw evidence surface."],
+};
+
+function pageFromLocation() {
+  if (window.location.pathname === "/lab") return "lab";
+  const candidate = window.location.hash.replace(/^#/, "");
+  return candidate in pageCopy && candidate !== "lab" ? candidate : "dashboard";
+}
+
+function activatePage(page) {
+  const selected = page in pageCopy ? page : "dashboard";
+  document.body.dataset.page = selected;
+  text("#pageTitle", pageCopy[selected][0]);
+  text("#pageDescription", pageCopy[selected][1]);
+  document.querySelectorAll(".tab[data-page]").forEach((tab) => {
+    tab.setAttribute("aria-selected", String(tab.dataset.page === selected));
+  });
+  document.title = selected === "dashboard"
+    ? "DragonSniff"
+    : `${pageCopy[selected][0]} · DragonSniff`;
+}
+
+function navigateToPage(page) {
+  const destination = page === "dashboard" ? "/" : `/#${page}`;
+  window.history.pushState(null, "", destination);
+  activatePage(page);
+}
+
+function scheduleUpdates(interval) {
+  if (updateTimer !== null) window.clearInterval(updateTimer);
+  updateTimer = window.setInterval(update, interval);
+}
+
+function applyLabOptions() {
+  const poll = Number(document.querySelector("#labPollInterval").value) || 1000;
+  const openRaw = document.querySelector("#labOpenRaw").checked;
+  const dense = document.querySelector("#labDense").checked;
+  document.body.dataset.density = dense ? "dense" : "normal";
+  document.querySelectorAll("[data-endpoint] details:nth-of-type(2)").forEach((details) => {
+    details.open = openRaw;
+  });
+  localStorage.setItem("dragonsniff.lab.poll", String(poll));
+  localStorage.setItem("dragonsniff.lab.openRaw", String(openRaw));
+  localStorage.setItem("dragonsniff.lab.dense", String(dense));
+  scheduleUpdates(poll);
+}
+
+function loadLabOptions() {
+  document.querySelector("#labPollInterval").value = localStorage.getItem("dragonsniff.lab.poll") || "1000";
+  document.querySelector("#labOpenRaw").checked = localStorage.getItem("dragonsniff.lab.openRaw") === "true";
+  document.querySelector("#labDense").checked = localStorage.getItem("dragonsniff.lab.dense") === "true";
+  applyLabOptions();
+}
 
 const churnFields = {
   cycles: "#churnCycles",
@@ -388,6 +448,14 @@ if (window.location.protocol === "file:") {
   document.querySelector("footer").hidden = true;
   document.querySelector("#sessionBadge").textContent = "service required";
 } else {
+  activatePage(pageFromLocation());
+  document.querySelectorAll(".tab[data-page], [data-go-page]").forEach((control) => {
+    control.addEventListener("click", () => navigateToPage(control.dataset.page || control.dataset.goPage));
+  });
+  window.addEventListener("popstate", () => activatePage(pageFromLocation()));
+  ["#labPollInterval", "#labOpenRaw", "#labDense"].forEach((selector) => {
+    document.querySelector(selector).addEventListener("change", applyLabOptions);
+  });
   document.querySelector("#connectForm").addEventListener("submit", (event) => {
     event.preventDefault();
     const target = targetInput.value.trim();
@@ -464,5 +532,5 @@ if (window.location.protocol === "file:") {
 
   targetInput.value = localStorage.getItem("dragonsniff.target") || "";
   update();
-  setInterval(update, 1000);
+  loadLabOptions();
 }

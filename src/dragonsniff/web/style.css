@@ -18,6 +18,7 @@
   --ring: light-dark(rgb(51 156 255), rgb(131 195 255 / 76%));
   --radius-lg: 8px;
   --radius-sm: 5px;
+  --rail-width: 50px;
 }
 
 * { box-sizing: border-box; }
@@ -25,16 +26,13 @@
 body {
   margin: 0;
   min-height: 100vh;
+  padding-left: var(--rail-width);
   color: var(--foreground);
-  background-color: var(--background);
-  background-image:
-    linear-gradient(var(--border) 1px, transparent 1px),
-    linear-gradient(90deg, var(--border) 1px, transparent 1px);
-  background-size: 32px 32px;
+  background: var(--background);
   font: 14px/1.4 -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
 }
 header, main, footer, .file-warning {
-  width: min(1200px, calc(100% - 32px));
+  width: min(1200px, calc(100% - 28px));
   margin-inline: auto;
 }
 header {
@@ -42,10 +40,10 @@ header {
   justify-content: space-between;
   gap: 24px;
   align-items: end;
-  padding: 38px 0 22px;
+  padding: 25px 0 16px;
 }
 h1, h2, h3, p { margin-top: 0; }
-h1 { margin-bottom: 6px; font-size: clamp(2.5rem, 6vw, 4.4rem); letter-spacing: -.055em; line-height: .95; }
+h1 { margin-bottom: 5px; font-size: clamp(1.8rem, 4vw, 2.7rem); letter-spacing: -.045em; line-height: 1; }
 h2 { font-size: 1.05rem; margin-bottom: 6px; }
 h3 { color: var(--muted-foreground); font-size: .72rem; letter-spacing: .08em; text-transform: uppercase; }
 code, pre, .eyebrow, .timing, .metric strong, .endpoint-heading h2 {
@@ -67,6 +65,71 @@ code, pre, .eyebrow, .timing, .metric strong, .endpoint-heading h2 {
 [data-status="unavailable"], [data-status="closed"], [data-status="stopping"], [data-status="cancelled"] { color: var(--warn); }
 [data-status="error"], [data-status="failed"] { color: var(--bad); }
 main { display: grid; gap: 12px; }
+[data-page-content] { display: none !important; }
+body[data-page="dashboard"] [data-page-content~="dashboard"],
+body[data-page="thermal"] [data-page-content~="thermal"],
+body[data-page="churn"] [data-page-content~="churn"],
+body[data-page="evidence"] [data-page-content~="evidence"],
+body[data-page="lab"] [data-page-content~="lab"] { display: grid !important; }
+.rail {
+  position: fixed;
+  inset: 0 auto 0 0;
+  z-index: 20;
+  width: var(--rail-width);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 7px 5px;
+  border-right: 1px solid var(--border);
+  background: color-mix(in srgb, var(--background) 92%, var(--foreground));
+}
+.rail-brand {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  margin-bottom: 4px;
+  color: var(--foreground);
+}
+.rail-brand svg { width: 27px; height: 27px; fill: currentColor; }
+.tab {
+  width: 38px;
+  height: 38px;
+  min-height: 38px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-left: 3px solid transparent;
+  border-radius: 3px;
+  color: var(--muted-foreground);
+  background: transparent;
+}
+.tab svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.tab:hover { color: var(--foreground); background: var(--muted); }
+.tab[aria-selected="true"] {
+  color: var(--primary);
+  border-left-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+}
+.rail-connection {
+  width: 38px;
+  margin-top: auto;
+  padding: 9px 0 5px;
+  display: grid;
+  place-items: center;
+}
+.rail-connection i { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
+.rail-connection span { display: none; }
 .card, .metric, .file-warning {
   background: color-mix(in srgb, var(--background) 88%, var(--card));
   border: 1px solid var(--border);
@@ -77,6 +140,18 @@ main { display: grid; gap: 12px; }
 .file-warning { margin-top: 18px; border-left: 4px solid var(--warn); }
 .file-warning code { color: var(--foreground); }
 .connect-card { display: grid; gap: 12px; }
+.page-panel {
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--card);
+}
+.dashboard-intro { grid-template-columns: minmax(0, 1fr) minmax(360px, .9fr); gap: 18px; align-items: center; }
+.dashboard-intro p:last-child { margin-bottom: 0; color: var(--muted-foreground); }
+.test-map { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
+.test-map button { min-height: 72px; display: flex; flex-direction: column; align-items: flex-start; text-align: left; }
+.test-map strong { color: var(--primary); }
+.test-map span { color: var(--muted-foreground); font-size: .7rem; }
 label { display: block; margin-bottom: 5px; color: var(--muted-foreground); font-size: .8rem; }
 .control-row, .actions { display: flex; flex-wrap: wrap; gap: 7px; }
 input, select {
@@ -213,14 +288,37 @@ pre {
 .timeline pre { max-height: 160px; margin-top: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
 footer { padding: 24px 0 42px; color: var(--muted-foreground); text-align: center; font-size: .76rem; }
 
+.lab-intro { border-left: 4px solid var(--primary); }
+.lab-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 8px; }
+.lab-options label { margin: 0; }
+.lab-options select { width: 100%; margin-top: 5px; }
+.check-option {
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--input);
+}
+.check-option input { flex: none; width: 16px; height: 16px; padding: 0; }
+body[data-density="dense"] pre { max-height: 230px; font-size: .68rem; }
+body[data-density="dense"] .card { padding: 11px; }
+
 @media (max-width: 900px) {
   .summary-grid, .endpoint-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .limits, .config-grid, .churn-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dashboard-intro { grid-template-columns: 1fr; }
 }
 @media (max-width: 620px) {
-  header { align-items: start; flex-direction: column; padding-top: 26px; }
+  :root { --rail-width: 43px; }
+  .rail { padding-inline: 2px; }
+  .tab, .rail-brand { width: 34px; height: 34px; min-height: 34px; }
+  header { align-items: start; flex-direction: column; padding-top: 20px; }
   .summary-grid, .endpoint-grid, .split, .config-grid, .churn-metrics { grid-template-columns: minmax(0, 1fr); }
   .control-row > * { width: 100%; }
   .thermal-panel { grid-template-columns: minmax(0, 1fr); }
   .thermal-readouts { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .test-map, .lab-options { grid-template-columns: 1fr; }
 }

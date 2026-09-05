@@ -56,6 +56,20 @@ class ServerTests(TestCase):
             self.assertEqual(status, 200)
             self.assertEqual(json.loads(body)["session_state"], "idle")
 
+    def test_family_ui_favicon_and_unlinked_lab_route_are_served(self) -> None:
+        with LocalServerFixture() as local:
+            lab_status, lab_body, lab_type = local.request("GET", "/lab")
+            svg_status, svg_body, svg_type = local.request("GET", "/favicon.svg")
+            ico_status, ico_body, ico_type = local.request("GET", "/favicon.ico")
+
+        self.assertEqual((lab_status, lab_type), (200, "text/html; charset=utf-8"))
+        self.assertIn(b"Super Secret Squirrel Laboratory", lab_body)
+        self.assertNotIn(b'data-page="lab"', lab_body)
+        self.assertEqual((svg_status, svg_type), (200, "image/svg+xml"))
+        self.assertIn(b"prefers-color-scheme", svg_body)
+        self.assertEqual((ico_status, ico_type), (200, "image/png"))
+        self.assertTrue(ico_body.startswith(b"\x89PNG\r\n\x1a\n"))
+
     def test_local_api_starts_observation_and_exports_jsonl(self) -> None:
         with DeviceFixture() as device, LocalServerFixture() as local:
             status, _, _ = local.request(
@@ -94,6 +108,10 @@ class ServerTests(TestCase):
         self.assertIn('id="thermal-heading">Thermals', html)
         self.assertIn('id="pidGauge"', html)
         self.assertIn('id="pidGaugeNeedle"', html)
+        self.assertIn('data-page="thermal"', html)
+        self.assertIn('data-page="churn"', html)
+        self.assertIn('href="/favicon.svg"', html)
+        self.assertIn('id="labPollInterval"', html)
         self.assertIn("Start bounded churn", html)
         self.assertIn('id="churnDelaySeconds"', html)
         self.assertIn('step="0.05"', html)
