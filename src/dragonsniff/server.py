@@ -231,6 +231,7 @@ class SessionManager:
             "bounds": config.bounds(),
             "estimated_records": config.estimated_records(),
             "samples_completed": 0,
+            "fetches_completed": 0,
             "state_successes": 0,
             "state_failures": 0,
             "health_successes": 0,

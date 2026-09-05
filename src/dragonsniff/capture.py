@@ -182,6 +182,7 @@ class CaptureRunner:
             "bounds": config.bounds(),
             "estimated_records": config.estimated_records(),
             "samples_completed": 0,
+            "fetches_completed": 0,
             "state_successes": 0,
             "state_failures": 0,
             "health_successes": 0,
@@ -281,15 +282,16 @@ class CaptureRunner:
 
     def _sample(self, path: str, sample_point: str) -> None:
         with self._lock:
-            sample = self._state["samples_completed"] + 1
+            fetch_sequence = self._state["fetches_completed"] + 1
         context = {
             "run_id": self.run_id,
             "owner": "capture",
-            "sample": sample,
+            "fetch_sequence": fetch_sequence,
             "sample_point": sample_point,
         }
         result = self.client.fetch_json(path, context=context)
         with self._lock:
+            self._state["fetches_completed"] = fetch_sequence
             if path == "/api/v2/info":
                 self._state["latest_info"] = deepcopy(result)
             elif path == "/api/v2/state":
@@ -301,9 +303,11 @@ class CaptureRunner:
                 self._state["latest_health"] = deepcopy(result)
                 key = "health_successes" if result["ok"] else "health_failures"
                 self._state[key] += 1
-                self._observe_boot_id(result)
+                self._observe_boot_id(result, fetch_sequence)
 
-    def _observe_boot_id(self, result: dict[str, Any]) -> None:
+    def _observe_boot_id(
+        self, result: dict[str, Any], fetch_sequence: int
+    ) -> None:
         parsed = result.get("parsed")
         boot_id = parsed.get("boot_id") if isinstance(parsed, dict) else None
         if not isinstance(boot_id, (str, int)):
@@ -315,7 +319,11 @@ class CaptureRunner:
         elif previous is not None and previous != boot_id:
             self._state["boot_id_changed"] = True
             self._state["boot_id_changes"].append(
-                {"from": previous, "to": boot_id, "sample": self._state["samples_completed"]}
+                {
+                    "from": previous,
+                    "to": boot_id,
+                    "fetch_sequence": fetch_sequence,
+                }
             )
         self._state["latest_boot_id"] = boot_id
 
@@ -326,10 +334,13 @@ class CaptureRunner:
             self._state["cleanup_complete"] = self.client.budget.active == 0
             elapsed_ms = self._elapsed_ms()
             self._state["elapsed_ms"] = elapsed_ms
+            samples_completed = self._state["samples_completed"]
+            fetches_completed = self._state["fetches_completed"]
         record = self.recorder.append(
             f"capture_run_{final}",
             run_id=self.run_id,
-            samples_completed=self._state["samples_completed"],
+            samples_completed=samples_completed,
+            fetches_completed=fetches_completed,
             elapsed_ms=elapsed_ms,
         )
         with self._lock:

@@ -22,14 +22,18 @@ If an endpoint responds too slowly to maintain the requested cadence, DragonSnif
 Each request and response retains:
 
 - UTC and monotonic timestamps
-- run ID, sample number, owner, and sample point
+- run ID, monotonic per-fetch sequence, owner, and sample point
 - endpoint, status, headers, and elapsed time
 - exact raw response text
 - parsed JSON and parsing errors when applicable
 
 Unknown and product-specific fields remain untouched. Missing optional fields do not fail a capture. State or health request failures increment visible counters and remain evidence rather than being converted into invented controller conclusions.
 
-Health observations track a present `boot_id`. A change is reported with the two observed values and sample location, but DragonSniff does not label it a crash or infer a cause.
+`samples_completed` counts state snapshots specifically. Every completed info, state,
+or health fetch also advances `fetches_completed`, and its request/response evidence
+carries that run-local value as `fetch_sequence`.
+
+Health observations track a present `boot_id`. A change is reported with the two observed values and fetch location, but DragonSniff does not label it a crash or infer a cause.
 
 ## PID release-candidate workflow
 

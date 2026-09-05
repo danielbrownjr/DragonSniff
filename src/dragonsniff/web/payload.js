@@ -50,7 +50,8 @@
     if (!capture || !capture.run_id) return null;
     const fields = [
       "run_id", "state", "target", "profile", "configuration", "estimated_records",
-      "samples_completed", "state_successes", "state_failures", "health_successes",
+      "samples_completed", "fetches_completed", "state_successes", "state_failures",
+      "health_successes",
       "health_failures", "initial_boot_id", "latest_boot_id", "boot_id_changed",
       "boot_id_changes", "cleanup_complete", "failure", "start_timestamp",
       "end_timestamp", "elapsed_ms",

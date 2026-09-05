@@ -138,6 +138,17 @@ class CaptureRunnerTests(TestCase):
             {record["endpoint"] for record in requests},
             {"/api/v2/info", "/api/v2/state", "/api/v2/health"},
         )
+        self.assertEqual(
+            [record["fetch_sequence"] for record in requests],
+            list(range(1, len(requests) + 1)),
+        )
+        self.assertTrue(all("sample" not in record for record in requests))
+        self.assertEqual(snapshot["fetches_completed"], len(requests))
+        terminal = next(
+            record for record in records if record["kind"] == "capture_run_completed"
+        )
+        self.assertEqual(terminal["samples_completed"], snapshot["samples_completed"])
+        self.assertEqual(terminal["fetches_completed"], snapshot["fetches_completed"])
         self.assertFalse(any(record["kind"].startswith("sse_") for record in records))
         self.assert_clean(runner)
 
@@ -152,6 +163,10 @@ class CaptureRunnerTests(TestCase):
         self.assertTrue(snapshot["boot_id_changed"])
         self.assertEqual(snapshot["boot_id_changes"][0]["from"], "boot-a")
         self.assertEqual(snapshot["boot_id_changes"][0]["to"], "boot-b")
+        self.assertIsInstance(
+            snapshot["boot_id_changes"][0]["fetch_sequence"], int
+        )
+        self.assertNotIn("sample", snapshot["boot_id_changes"][0])
         self.assertNotIn("cause", snapshot["boot_id_changes"][0])
         self.assert_clean(runner)
 
