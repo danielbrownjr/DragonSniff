@@ -71,6 +71,29 @@
     return Object.fromEntries(fields.map((field) => [field, configuration[field]]));
   }
 
+  function thermalSnapshot(result) {
+    const state = result?.parsed;
+    if (!state || typeof state !== "object" || Array.isArray(state)) return null;
+    const finite = (value) => typeof value === "number" && Number.isFinite(value)
+      ? value
+      : null;
+    const chamber = finite(state.sensors?.chamber?.temperature_c);
+    const ptc = finite(state.sensors?.ptc?.temperature_c);
+    const effectiveTarget = finite(state.target?.effective_c);
+    const requestedTarget = finite(state.target?.requested_c);
+    const duty = finite(state.heater?.commanded_duty);
+    return {
+      chamber_c: chamber,
+      target_c: effectiveTarget ?? requestedTarget,
+      ptc_c: ptc,
+      duty_percent: duty === null ? null : Math.max(0, Math.min(100, duty * 100)),
+      constraint: typeof state.heater?.constraint === "string"
+        ? state.heater.constraint
+        : null,
+      output: typeof state.heater?.output === "boolean" ? state.heater.output : null,
+    };
+  }
+
   return {
     payloadText,
     churnSummaryText,
@@ -78,5 +101,6 @@
     churnProfileConfiguration,
     captureSummaryText,
     captureProfileConfiguration,
+    thermalSnapshot,
   };
 });
