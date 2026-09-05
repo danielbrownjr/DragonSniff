@@ -59,6 +59,7 @@ test("churn summary copies stored evidence rather than rendered text", () => {
     rejected_connections: 0,
     events_observed: 2,
     boot_id_changed: false,
+    settlement: {state: "recovered", baseline_sse_clients: 0, latest_sse_clients: 0},
     cleanup_complete: true,
     cycles: [{cycle: 1, outcome: "disconnected", future: {value: true}}],
   };
@@ -67,6 +68,7 @@ test("churn summary copies stored evidence rather than rendered text", () => {
   assert.equal(copied.run_id, "run-1");
   assert.equal(copied.cycles[0].future.value, true);
   assert.equal(copied.cleanup_complete, true);
+  assert.equal(copied.settlement.state, "recovered");
 });
 
 test("churn copy controls reject absent evidence and preserve raw health exactly", () => {

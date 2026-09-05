@@ -48,7 +48,11 @@ class SessionManager:
             previous = self._observer
             churn = self._churn
             capture = self._capture
-        if churn is not None and churn.snapshot()["state"] in {"running", "stopping"}:
+        if churn is not None and churn.snapshot()["state"] in {
+            "running",
+            "settling",
+            "stopping",
+        }:
             raise RuntimeError("a churn run is active; stop it before normal observation")
         if capture is not None and capture.snapshot()["state"] in {"running", "stopping"}:
             raise RuntimeError("a capture run is active; stop it before normal observation")
@@ -101,7 +105,11 @@ class SessionManager:
             capture = self._capture
         if observer is not None and observer.snapshot()["session_state"] != "stopped":
             raise RuntimeError("normal observation is active; stop it before starting churn")
-        if previous is not None and previous.snapshot()["state"] in {"running", "stopping"}:
+        if previous is not None and previous.snapshot()["state"] in {
+            "running",
+            "settling",
+            "stopping",
+        }:
             raise RuntimeError("a churn run is already active")
         if capture is not None and capture.snapshot()["state"] in {"running", "stopping"}:
             raise RuntimeError("a capture run is active; stop it before starting churn")
@@ -278,6 +286,14 @@ class SessionManager:
             "initial_boot_id": None,
             "latest_boot_id": None,
             "latest_health": None,
+            "settlement": {
+                "state": "not_started",
+                "baseline_sse_clients": None,
+                "latest_sse_clients": None,
+                "max_wait_seconds": ChurnRunner.SETTLEMENT_SAMPLE_SECONDS[-1],
+                "elapsed_ms": 0.0,
+                "samples": [],
+            },
             "cycles": [],
             "cleanup_complete": True,
             "failure": None,
