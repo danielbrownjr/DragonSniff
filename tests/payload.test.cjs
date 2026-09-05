@@ -9,6 +9,7 @@ const {
   churnProfileConfiguration,
   churnSummaryText,
   payloadText,
+  thermalSnapshot,
 } = require("../src/dragonsniff/web/payload.js");
 
 test("parsed copy uses stable formatted JSON and preserves unknown fields", () => {
@@ -131,4 +132,41 @@ test("named capture profiles populate exact editable schedules", () => {
   const selected = captureProfileConfiguration(profiles, "Smoke");
   selected.duration_seconds = 60;
   assert.equal(profiles.Smoke.duration_seconds, 120);
+});
+
+test("thermal snapshot extracts bounded optional display values", () => {
+  const sample = thermalSnapshot({parsed: {
+    sensors: {
+      chamber: {temperature_c: 69.95},
+      ptc: {temperature_c: 66.7},
+    },
+    target: {requested_c: 70, effective_c: 69},
+    heater: {commanded_duty: 0.155, constraint: "approach_limit", output: true},
+  }});
+
+  assert.deepEqual(sample, {
+    chamber_c: 69.95,
+    target_c: 69,
+    ptc_c: 66.7,
+    duty_percent: 15.5,
+    constraint: "approach_limit",
+    output: true,
+  });
+  assert.equal(thermalSnapshot({parsed: null}), null);
+  assert.equal(thermalSnapshot({parsed: []}), null);
+});
+
+test("thermal snapshot does not invent absent values and clamps the gauge", () => {
+  assert.deepEqual(thermalSnapshot({parsed: {heater: {commanded_duty: 1.4}}}), {
+    chamber_c: null,
+    target_c: null,
+    ptc_c: null,
+    duty_percent: 100,
+    constraint: null,
+    output: null,
+  });
+  assert.equal(
+    thermalSnapshot({parsed: {heater: {commanded_duty: "0.5"}}}).duty_percent,
+    null,
+  );
 });
