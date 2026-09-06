@@ -196,7 +196,13 @@ class DragonClient:
             }
             self.recorder.append("http_response", **record_context, **result)
             return result
-        except (OSError, URLError, TimeoutError, ResponseTooLargeError) as exc:
+        except (
+            OSError,
+            URLError,
+            TimeoutError,
+            ResponseTooLargeError,
+            HTTPException,
+        ) as exc:
             result = {
                 "request_id": request_id,
                 "endpoint": path,

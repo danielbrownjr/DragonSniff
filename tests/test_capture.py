@@ -248,3 +248,23 @@ class CaptureRunnerTests(TestCase):
             for record in runner.recorder.snapshot()
         ))
         self.assert_clean(runner)
+
+    def test_malformed_status_line_counts_as_failed_sample_without_aborting_capture(self) -> None:
+        with DeviceFixture({"bad_status_once": {"/api/v2/health"}}) as fixture:
+            runner = CaptureRunner(parse_target(fixture.target), short_config())
+            runner.start()
+            wait_until(lambda: runner.snapshot()["state"] == "completed")
+            snapshot = runner.snapshot()
+
+        self.assertEqual(snapshot["state"], "completed")
+        self.assertEqual(snapshot["health_failures"], 1)
+        self.assertGreaterEqual(snapshot["health_successes"], 1)
+        self.assertTrue(any(
+            record["kind"] == "http_error" and "BadStatusLine" in record["error"]
+            for record in runner.recorder.snapshot()
+        ))
+        self.assertFalse(any(
+            record["kind"] == "capture_internal_failure"
+            for record in runner.recorder.snapshot()
+        ))
+        self.assert_clean(runner)
