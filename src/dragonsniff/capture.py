@@ -170,6 +170,7 @@ class CaptureRunner:
         self.run_id = uuid4().hex
         self._lock = Lock()
         self._cancel = Event()
+        self._finished = Event()
         self._thread: Thread | None = None
         self._started_ns: int | None = None
         self._state: dict[str, Any] = {
@@ -345,6 +346,15 @@ class CaptureRunner:
         )
         with self._lock:
             self._state["end_timestamp"] = record["timestamp"]
+        self._finished.set()
+
+    def wait_finished(self, timeout: float | None = None) -> bool:
+        """Wait until terminal evidence and local cleanup are complete."""
+        self._finish_if_complete()
+        if self._finished.wait(timeout):
+            return True
+        self._finish_if_complete()
+        return self._finished.is_set()
 
     def _finish_if_complete(self) -> bool:
         with self._lock:

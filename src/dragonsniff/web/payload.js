@@ -1,10 +1,14 @@
 (function (root, factory) {
   "use strict";
+
   const api = factory();
   if (typeof module === "object" && module.exports) module.exports = api;
   if (root) root.DragonSniffPayload = api;
 })(typeof window === "undefined" ? null : window, function () {
   "use strict";
+
+  const MAX_ESTIMATED_RECORDS = 25_000;
+  const PUBLIC_PAGES = Object.freeze(["dashboard", "thermal", "churn", "evidence"]);
 
   function payloadText(result, view) {
     if (!result || (view !== "parsed" && view !== "raw")) return null;
@@ -88,6 +92,23 @@
     return (stateSamples + healthSamples + 2) * 2 + 4;
   }
 
+  function captureBudgetState(configuration, maximum = MAX_ESTIMATED_RECORDS) {
+    const estimate = captureRecordEstimate(configuration);
+    const validMaximum = typeof maximum === "number" && Number.isFinite(maximum) && maximum > 0
+      ? maximum
+      : MAX_ESTIMATED_RECORDS;
+    return {
+      estimate,
+      maximum: validMaximum,
+      allowed: estimate !== null && estimate <= validMaximum,
+    };
+  }
+
+  function resolvePage(candidate, labRoute = false) {
+    if (labRoute) return "lab";
+    return PUBLIC_PAGES.includes(candidate) ? candidate : "dashboard";
+  }
+
   function thermalSnapshot(result) {
     const state = result?.parsed;
     if (!state || typeof state !== "object" || Array.isArray(state)) return null;
@@ -119,6 +140,9 @@
     captureSummaryText,
     captureProfileConfiguration,
     captureRecordEstimate,
+    captureBudgetState,
+    resolvePage,
     thermalSnapshot,
+    MAX_ESTIMATED_RECORDS,
   };
 });

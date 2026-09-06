@@ -1,10 +1,15 @@
 from http.client import HTTPConnection
 import json
-from threading import Thread
+import re
+from threading import Event, Thread
 import time
 from unittest import TestCase
+from unittest.mock import patch
 
+from dragonsniff.capture import CaptureConfig
+from dragonsniff.recording import SessionRecorder
 from dragonsniff.server import DragonSniffServer, SessionManager
+from dragonsniff.target import parse_target
 
 from tests.test_client import DeviceFixture
 
@@ -114,7 +119,7 @@ class ServerTests(TestCase):
         self.assertIn('id="pidGaugeNeedle"', html)
         self.assertIn('data-page="thermal"', html)
         self.assertIn('data-page="churn"', html)
-        self.assertIn('href="/favicon.svg"', html)
+        self.assertIn('href="favicon.svg"', html)
         self.assertIn('id="labPollInterval"', html)
         self.assertIn("Start bounded churn", html)
         self.assertIn('id="churnDelaySeconds"', html)
@@ -126,9 +131,20 @@ class ServerTests(TestCase):
         self.assertIn("Copy run summary", html)
         self.assertIn("Starting a capture pauses an active live session", html)
         self.assertIn("Starting churn pauses an active live session", html)
-        self.assertIn("async function startAutomatedTest", app)
-        self.assertIn("function updateCaptureBudget", app)
-        self.assertIn('navigateToPage("dashboard")', app)
+        self.assertIn('href="./#thermal"', html)
+        self.assertNotIn("aria-selected", html)
+
+    def test_browser_record_budget_constant_matches_python_policy(self) -> None:
+        with LocalServerFixture() as local:
+            status, body, _ = local.request("GET", "/payload.js")
+
+        match = re.search(r"MAX_ESTIMATED_RECORDS\s*=\s*([\d_]+)", body.decode())
+        self.assertEqual(status, 200)
+        self.assertIsNotNone(match)
+        self.assertEqual(
+            int(match.group(1).replace("_", "")),  # type: ignore[union-attr]
+            CaptureConfig.MAX_ESTIMATED_RECORDS,
+        )
 
     def test_idle_snapshot_exposes_named_churn_profiles(self) -> None:
         with LocalServerFixture() as local:
@@ -326,6 +342,9 @@ class ServerTests(TestCase):
             status, export, content_type = local.request(
                 "GET", "/local/v1/session/export"
             )
+            capture_status, capture_export, _ = local.request(
+                "GET", "/local/v1/capture/export"
+            )
 
         self.assertEqual(observation_status, 202)
         self.assertEqual(snapshot["active_mode"], "observation")
@@ -335,8 +354,232 @@ class ServerTests(TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(content_type, "application/x-ndjson; charset=utf-8")
         records = [json.loads(line) for line in export.splitlines()]
-        self.assertTrue(any(record["kind"] == "capture_run_completed" for record in records))
-        self.assertFalse(any(record["kind"].startswith("sse_") for record in records))
+        # The resumed observer remains live, so more records may arrive between
+        # the snapshot and export requests. The export must still be that same
+        # observer recorder, never the completed capture recorder.
+        self.assertGreaterEqual(len(records), snapshot["recorder"]["records"])
+        self.assertTrue(any(record["kind"].startswith("sse_") for record in records))
+        self.assertFalse(any(record["kind"] == "capture_run_completed" for record in records))
+        capture_records = [json.loads(line) for line in capture_export.splitlines()]
+        self.assertEqual(capture_status, 200)
+        self.assertTrue(
+            any(record["kind"] == "capture_run_completed" for record in capture_records)
+        )
+
+    def test_cancelled_capture_also_restores_observation(self) -> None:
+        with DeviceFixture({"quiet_seconds": 1.0}) as device, LocalServerFixture() as local:
+            local.request("POST", "/local/v1/session/start", {"target": device.target})
+            local.request(
+                "POST",
+                "/local/v1/capture/start",
+                {
+                    "target": device.target,
+                    "configuration": {
+                        "duration_seconds": 10,
+                        "state_interval_seconds": 1,
+                        "health_interval_seconds": 5,
+                    },
+                },
+            )
+            local.request("POST", "/local/v1/capture/stop", {})
+            deadline = time.monotonic() + 3
+            snapshot = {}
+            while time.monotonic() < deadline:
+                _, body, _ = local.request("GET", "/local/v1/session")
+                snapshot = json.loads(body)
+                if snapshot["active_mode"] == "observation":
+                    break
+                time.sleep(0.01)
+
+        self.assertEqual(snapshot["active_mode"], "observation")
+        self.assertEqual(snapshot["capture"]["state"], "cancelled")
+        self.assertEqual(snapshot["automation_return"]["resumed_after"], "capture")
+
+    def test_pending_observation_return_survives_a_second_automated_run(self) -> None:
+        class FakeRunner:
+            instances = []
+            TERMINAL_STATES = {"completed", "cancelled", "failed"}
+
+            def __init__(self, target, config) -> None:
+                self.target = target
+                self.config = config
+                self.recorder = SessionRecorder()
+                self.finished = Event()
+                self.__class__.instances.append(self)
+
+            def start(self):
+                return self.snapshot()
+
+            def snapshot(self, recent_records: int = 100):
+                return {
+                    "state": "completed",
+                    "target": self.target.base_url,
+                    "recorder": self.recorder.summary(),
+                    "recent_records": [],
+                    "active_device_connections": 0,
+                    "device_connection_limit": 1,
+                }
+
+            def wait_finished(self, timeout=None):
+                return self.finished.wait(timeout)
+
+            def stop(self, timeout=2.0):
+                self.finished.set()
+                return True
+
+        class FakeObserver:
+            def __init__(self, target) -> None:
+                self.target = target
+                self.recorder = SessionRecorder()
+
+            def start(self) -> None:
+                self.recorder.append("session_started")
+
+            def stop(self, timeout=2.0) -> bool:
+                return True
+
+            def snapshot(self, recent_records: int = 100):
+                return {
+                    "session_state": "observing",
+                    "target": self.target.base_url,
+                    "http": {},
+                    "sse": {"state": "open", "events": 0},
+                    "recorder": self.recorder.summary(),
+                    "limits": {},
+                    "recent_records": self.recorder.snapshot()[-recent_records:],
+                }
+
+        manager = SessionManager()
+        manager._resume_target = parse_target("dragon.local")
+        try:
+            with (
+                patch("dragonsniff.server.CaptureRunner", FakeRunner),
+                patch("dragonsniff.server.Observer", FakeObserver),
+            ):
+                manager.start_capture("dragon.local", {})
+                manager.start_capture("dragon.local", {})
+                FakeRunner.instances[-1].finished.set()
+                deadline = time.monotonic() + 1
+                while manager.current() is None and time.monotonic() < deadline:
+                    time.sleep(0.01)
+
+            self.assertIsNotNone(manager.current())
+            self.assertEqual(manager.snapshot()["automation_return"]["resumed_after"], "capture")
+        finally:
+            manager.shutdown()
+
+    def test_shutdown_reclaims_resume_watcher_without_starting_an_observer(self) -> None:
+        class PendingRunner:
+            TERMINAL_STATES = {"completed", "cancelled", "failed"}
+
+            def __init__(self) -> None:
+                self.recorder = SessionRecorder()
+                self.finished = Event()
+
+            def wait_finished(self, timeout=None):
+                return self.finished.wait(timeout)
+
+            def stop(self, timeout=2.0):
+                self.finished.set()
+                return True
+
+        manager = SessionManager()
+        runner = PendingRunner()
+        manager._capture = runner  # type: ignore[assignment]
+        manager._resume_target = parse_target("dragon.local")
+        manager._automation_generation = 1
+        with patch("dragonsniff.server.Observer") as observer_type:
+            manager._watch_and_resume("capture", runner, 1)  # type: ignore[arg-type]
+            manager.shutdown()
+
+        observer_type.assert_not_called()
+        self.assertFalse(any(thread.is_alive() for thread in manager._resume_threads))
+
+    def test_resume_start_failure_is_reported_without_installing_broken_observer(self) -> None:
+        class FinishedRunner:
+            def __init__(self) -> None:
+                self.recorder = SessionRecorder()
+
+            def wait_finished(self, timeout=None):
+                return True
+
+        class FailingObserver:
+            def __init__(self, target) -> None:
+                self.target = target
+                self.recorder = SessionRecorder()
+
+            def start(self) -> None:
+                raise RuntimeError("synthetic resume failure")
+
+        manager = SessionManager()
+        runner = FinishedRunner()
+        manager._capture = runner  # type: ignore[assignment]
+        manager._resume_target = parse_target("dragon.local")
+        manager._automation_generation = 1
+        with (
+            patch("dragonsniff.server.Observer", FailingObserver),
+            self.assertLogs("dragonsniff.server", level="ERROR"),
+        ):
+            manager._resume_observation_after(
+                "capture", runner, 1  # type: ignore[arg-type]
+            )
+
+        self.assertIsNone(manager.current())
+        self.assertIn("synthetic resume failure", manager._resume_error or "")
+
+    def test_slow_automation_transition_does_not_block_session_polling(self) -> None:
+        stop_entered = Event()
+        release_stop = Event()
+
+        class SlowObserver:
+            def __init__(self) -> None:
+                self.target = parse_target("127.0.0.1:9")
+                self.recorder = SessionRecorder()
+
+            def stop(self, timeout=2.0) -> bool:
+                stop_entered.set()
+                return release_stop.wait(timeout)
+
+            def snapshot(self, recent_records: int = 100):
+                return {
+                    "session_state": "observing",
+                    "target": self.target.base_url,
+                    "http": {},
+                    "sse": {"state": "open", "events": 0},
+                    "recorder": self.recorder.summary(),
+                    "limits": {},
+                    "recent_records": [],
+                }
+
+        manager = SessionManager()
+        manager._observer = SlowObserver()  # type: ignore[assignment]
+        with LocalServerFixture(manager) as local:
+            start_result = []
+            start_thread = Thread(
+                target=lambda: start_result.append(local.request(
+                    "POST",
+                    "/local/v1/capture/start",
+                    {
+                        "target": "127.0.0.1:9",
+                        "configuration": {
+                            "duration_seconds": 1,
+                            "state_interval_seconds": 0.5,
+                            "health_interval_seconds": 5,
+                        },
+                    },
+                ))
+            )
+            start_thread.start()
+            self.assertTrue(stop_entered.wait(1))
+            started = time.monotonic()
+            status, _, _ = local.request("GET", "/local/v1/session")
+            elapsed = time.monotonic() - started
+            release_stop.set()
+            start_thread.join(timeout=2)
+
+        self.assertEqual(status, 200)
+        self.assertLess(elapsed, 0.5)
+        self.assertEqual(start_result[0][0], 202)
 
     def test_capture_configuration_is_validated_server_side(self) -> None:
         with LocalServerFixture() as local:

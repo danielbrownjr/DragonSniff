@@ -10,7 +10,6 @@ let currentSnapshot = null;
 let churnProfiles = {};
 let captureProfiles = {};
 let updateTimer = null;
-let pendingAutomationReturn = null;
 
 const pageCopy = {
   dashboard: ["DragonSniff", "Sniff out one Dragon, follow the smoke, and bag the raw evidence."],
@@ -21,18 +20,21 @@ const pageCopy = {
 };
 
 function pageFromLocation() {
-  if (window.location.pathname === "/lab") return "lab";
   const candidate = window.location.hash.replace(/^#/, "");
-  return candidate in pageCopy && candidate !== "lab" ? candidate : "dashboard";
+  return payloadTools.resolvePage(candidate, window.location.pathname === "/lab");
 }
 
 function activatePage(page) {
-  const selected = page in pageCopy ? page : "dashboard";
+  const selected = payloadTools.resolvePage(page, window.location.pathname === "/lab");
   document.body.dataset.page = selected;
   text("#pageTitle", pageCopy[selected][0]);
   text("#pageDescription", pageCopy[selected][1]);
   document.querySelectorAll(".tab[data-page]").forEach((tab) => {
-    tab.setAttribute("aria-selected", String(tab.dataset.page === selected));
+    if (tab.dataset.page === selected) tab.setAttribute("aria-current", "page");
+    else tab.removeAttribute("aria-current");
+  });
+  document.querySelectorAll("[data-page-content]").forEach((section) => {
+    section.hidden = !section.dataset.pageContent.split(/\s+/).includes(selected);
   });
   document.title = selected === "dashboard"
     ? "DragonSniff"
@@ -50,17 +52,19 @@ function scheduleUpdates(interval) {
   updateTimer = window.setInterval(update, interval);
 }
 
-function applyLabOptions() {
+function applyLabOptions(persist = true) {
   const poll = Number(document.querySelector("#labPollInterval").value) || 1000;
   const openRaw = document.querySelector("#labOpenRaw").checked;
   const dense = document.querySelector("#labDense").checked;
   document.body.dataset.density = dense ? "dense" : "normal";
-  document.querySelectorAll("[data-endpoint] details:nth-of-type(2)").forEach((details) => {
-    details.open = openRaw;
+  document.querySelectorAll('[data-copy-view="raw"]').forEach((button) => {
+    button.closest("details").open = openRaw;
   });
-  localStorage.setItem("dragonsniff.lab.poll", String(poll));
-  localStorage.setItem("dragonsniff.lab.openRaw", String(openRaw));
-  localStorage.setItem("dragonsniff.lab.dense", String(dense));
+  if (persist) {
+    localStorage.setItem("dragonsniff.lab.poll", String(poll));
+    localStorage.setItem("dragonsniff.lab.openRaw", String(openRaw));
+    localStorage.setItem("dragonsniff.lab.dense", String(dense));
+  }
   scheduleUpdates(poll);
 }
 
@@ -68,7 +72,7 @@ function loadLabOptions() {
   document.querySelector("#labPollInterval").value = localStorage.getItem("dragonsniff.lab.poll") || "1000";
   document.querySelector("#labOpenRaw").checked = localStorage.getItem("dragonsniff.lab.openRaw") === "true";
   document.querySelector("#labDense").checked = localStorage.getItem("dragonsniff.lab.dense") === "true";
-  applyLabOptions();
+  applyLabOptions(false);
 }
 
 const churnFields = {
@@ -100,7 +104,7 @@ function syncChurnProfiles(profiles, selectedProfile, configuration) {
     option.textContent = name;
     selector.append(option);
   });
-  selector.value = selectedProfile in profiles ? selectedProfile : "Custom";
+  selector.value = Object.hasOwn(profiles, selectedProfile) ? selectedProfile : "Custom";
   setChurnConfiguration(
     payloadTools.churnProfileConfiguration(profiles, selectedProfile) || configuration,
   );
@@ -122,21 +126,25 @@ function captureConfigurationFromForm() {
 }
 
 function updateCaptureBudget() {
-  const estimate = payloadTools.captureRecordEstimate(captureConfigurationFromForm());
-  const maximum = Number(currentSnapshot?.capture?.bounds?.max_estimated_records) || 25000;
-  const overBudget = estimate !== null && estimate > maximum;
+  const configuredMaximum = Number(currentSnapshot?.capture?.bounds?.max_estimated_records);
+  const state = payloadTools.captureBudgetState(
+    captureConfigurationFromForm(),
+    Number.isFinite(configuredMaximum) ? configuredMaximum : payloadTools.MAX_ESTIMATED_RECORDS,
+  );
+  const {estimate, maximum, allowed} = state;
   const budget = document.querySelector("#captureBudget");
-  budget.dataset.status = estimate === null || overBudget ? "error" : "available";
-  budget.textContent = estimate === null
+  budget.dataset.status = allowed ? "available" : "error";
+  const message = estimate === null
     ? "Enter positive schedule values to preview retained evidence."
-    : overBudget
+    : !allowed
       ? `Estimated retained records: ${estimate.toLocaleString()} / ${maximum.toLocaleString()} — shorten the duration or increase an interval.`
       : `Estimated retained records: ${estimate.toLocaleString()} / ${maximum.toLocaleString()} — schedule fits the evidence budget.`;
+  if (budget.textContent !== message) budget.textContent = message;
 
   const captureActive = ["running", "stopping"].includes(currentSnapshot?.capture?.state);
   const churnActive = ["running", "settling", "stopping"].includes(currentSnapshot?.churn?.state);
   document.querySelector("#captureStartButton").disabled = (
-    captureActive || churnActive || estimate === null || overBudget
+    captureActive || churnActive || !allowed
   );
 }
 
@@ -150,7 +158,7 @@ function syncCaptureProfiles(profiles, selectedProfile, configuration) {
     option.textContent = name;
     selector.append(option);
   });
-  selector.value = selectedProfile in profiles ? selectedProfile : "Custom";
+  selector.value = Object.hasOwn(profiles, selectedProfile) ? selectedProfile : "Custom";
   setCaptureConfiguration(
     payloadTools.captureProfileConfiguration(profiles, selectedProfile) || configuration,
   );
@@ -444,13 +452,10 @@ function render(snapshot) {
   document.querySelector("#stopButton").disabled = !active || stopping;
   renderChurn(snapshot);
   renderCapture(snapshot);
-  if (pendingAutomationReturn && snapshot.active_mode === "observation") {
-    const automated = pendingAutomationReturn === "capture" ? snapshot.capture : snapshot.churn;
-    if (["completed", "cancelled", "failed"].includes(automated?.state)) {
-      pendingAutomationReturn = null;
-      notice.textContent = "Automated test finished. Live observation has resumed.";
-      navigateToPage("dashboard");
-    }
+  if (snapshot.automation_return?.error) {
+    notice.textContent = `Automated test finished, but live observation could not resume: ${snapshot.automation_return.error}`;
+  } else if (snapshot.active_mode === "observation" && snapshot.automation_return?.resumed_after) {
+    notice.textContent = "Automated test finished. Live observation has resumed.";
   }
 }
 
@@ -479,10 +484,8 @@ async function act(path, body = {}, statusNode = notice) {
   }
 }
 
-async function startAutomatedTest(kind, path, body, statusNode) {
-  pendingAutomationReturn = kind;
-  const snapshot = await act(path, body, statusNode);
-  if (!snapshot || snapshot.active_mode !== kind) pendingAutomationReturn = null;
+async function startAutomatedTest(path, body, statusNode) {
+  await act(path, body, statusNode);
 }
 
 if (window.location.protocol === "file:") {
@@ -492,8 +495,8 @@ if (window.location.protocol === "file:") {
   document.querySelector("#sessionBadge").textContent = "service required";
 } else {
   activatePage(pageFromLocation());
-  document.querySelectorAll(".tab[data-page], [data-go-page]").forEach((control) => {
-    control.addEventListener("click", () => navigateToPage(control.dataset.page || control.dataset.goPage));
+  document.querySelectorAll("[data-go-page]").forEach((control) => {
+    control.addEventListener("click", () => navigateToPage(control.dataset.goPage));
   });
   window.addEventListener("popstate", () => activatePage(pageFromLocation()));
   window.addEventListener("hashchange", () => activatePage(pageFromLocation()));
@@ -529,7 +532,6 @@ if (window.location.protocol === "file:") {
     event.preventDefault();
     const configuration = captureConfigurationFromForm();
     startAutomatedTest(
-      "capture",
       "/local/v1/capture/start",
       {target: targetInput.value.trim(), configuration},
       captureNotice,
@@ -562,7 +564,6 @@ if (window.location.protocol === "file:") {
       delay_seconds: Number(document.querySelector("#churnDelaySeconds").value),
     };
     startAutomatedTest(
-      "churn",
       "/local/v1/churn/start",
       {target: targetInput.value.trim(), configuration},
       churnNotice,
@@ -583,5 +584,6 @@ if (window.location.protocol === "file:") {
 
   targetInput.value = localStorage.getItem("dragonsniff.target") || "";
   update();
-  loadLabOptions();
+  if (window.location.pathname === "/lab") loadLabOptions();
+  else scheduleUpdates(1000);
 }

@@ -3,6 +3,8 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 const {
+  MAX_ESTIMATED_RECORDS,
+  captureBudgetState,
   captureProfileConfiguration,
   captureRecordEstimate,
   captureSummaryText,
@@ -10,6 +12,7 @@ const {
   churnProfileConfiguration,
   churnSummaryText,
   payloadText,
+  resolvePage,
   thermalSnapshot,
 } = require("../src/dragonsniff/web/payload.js");
 
@@ -153,6 +156,30 @@ test("capture estimate previews the server retained-record calculation", () => {
     state_interval_seconds: 0,
     health_interval_seconds: 10,
   }), null);
+});
+
+test("capture budget state gates invalid and oversized schedules", () => {
+  assert.equal(MAX_ESTIMATED_RECORDS, 25_000);
+  assert.deepEqual(captureBudgetState({
+    duration_seconds: 120,
+    state_interval_seconds: 1,
+    health_interval_seconds: 10,
+  }), {estimate: 280, maximum: 25_000, allowed: true});
+  assert.equal(captureBudgetState({
+    duration_seconds: 43_200,
+    state_interval_seconds: 0.5,
+    health_interval_seconds: 5,
+  }).allowed, false);
+  assert.equal(captureBudgetState({duration_seconds: 0}).allowed, false);
+});
+
+test("page routing accepts only owned public page names", () => {
+  assert.equal(resolvePage("thermal"), "thermal");
+  assert.equal(resolvePage("lab"), "dashboard");
+  assert.equal(resolvePage("constructor"), "dashboard");
+  assert.equal(resolvePage("toString"), "dashboard");
+  assert.equal(resolvePage("valueOf"), "dashboard");
+  assert.equal(resolvePage("anything", true), "lab");
 });
 
 test("thermal snapshot extracts bounded optional display values", () => {
