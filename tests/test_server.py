@@ -51,11 +51,46 @@ class ServerTests(TestCase):
         with self.assertRaises(ValueError):
             DragonSniffServer(("0.0.0.0", 0))
 
+    def test_explicit_wildcard_bind_keeps_loopback_host_boundary(self) -> None:
+        server = DragonSniffServer(
+            ("0.0.0.0", 0), allow_wildcard_bind=True
+        )
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = server.server_port
+            accepted = HTTPConnection("127.0.0.1", port, timeout=2)
+            accepted.request("GET", "/healthz", headers={"Host": f"127.0.0.1:{port}"})
+            response = accepted.getresponse()
+            self.assertEqual(response.status, 200)
+            self.assertEqual(json.loads(response.read()), {"status": "ok"})
+            accepted.close()
+
+            rejected = HTTPConnection("127.0.0.1", port, timeout=2)
+            rejected.request("GET", "/healthz", headers={"Host": f"192.0.2.1:{port}"})
+            response = rejected.getresponse()
+            self.assertEqual(response.status, 403)
+            self.assertEqual(json.loads(response.read())["error"], "forbidden")
+            rejected.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_health_endpoint_does_not_require_a_device_session(self) -> None:
+        with LocalServerFixture() as local:
+            status, body, content_type = local.request("GET", "/healthz")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(content_type, "application/json; charset=utf-8")
+        self.assertEqual(json.loads(body), {"status": "ok"})
+
     def test_static_ui_and_idle_session_are_available_locally(self) -> None:
         with LocalServerFixture() as local:
             status, body, content_type = local.request("GET", "/")
             self.assertEqual(status, 200)
             self.assertIn(b"DragonSniff", body)
+            self.assertIn(b"Current mode", body)
             self.assertEqual(content_type, "text/html; charset=utf-8")
             status, body, _ = local.request("GET", "/local/v1/session")
             self.assertEqual(status, 200)
@@ -126,6 +161,7 @@ class ServerTests(TestCase):
         self.assertEqual(html.count('data-copy-view="parsed"'), 3)
         self.assertEqual(html.count('data-copy-view="raw"'), 3)
         self.assertIn("Stop event stream", html)
+        self.assertGreaterEqual(html.count('class="danger"'), 4)
         self.assertIn("Poke it with a stick", html)
         self.assertIn("Watch the dragon breathe", html)
         self.assertIn("Start passive capture", html)
@@ -353,6 +389,10 @@ class ServerTests(TestCase):
                 if (
                     snapshot["active_mode"] == "observation"
                     and snapshot["capture"]["state"] == "completed"
+                    and any(
+                        record["kind"].startswith("sse_")
+                        for record in snapshot["recent_records"]
+                    )
                 ):
                     break
                 time.sleep(0.01)
