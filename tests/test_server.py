@@ -352,7 +352,12 @@ class ServerTests(TestCase):
                 snapshot = json.loads(body)
                 if (
                     snapshot["active_mode"] == "observation"
+                    and snapshot["session_state"] == "observing"
                     and snapshot["capture"]["state"] == "completed"
+                    and any(
+                        record["kind"].startswith("sse_")
+                        for record in snapshot["recent_records"]
+                    )
                 ):
                     break
                 time.sleep(0.01)
@@ -365,7 +370,7 @@ class ServerTests(TestCase):
 
         self.assertEqual(observation_status, 202)
         self.assertEqual(snapshot["active_mode"], "observation")
-        self.assertIn(snapshot["session_state"], {"starting", "observing"})
+        self.assertEqual(snapshot["session_state"], "observing")
         self.assertGreaterEqual(snapshot["capture"]["samples_completed"], 2)
         self.assertTrue(snapshot["capture"]["cleanup_complete"])
         self.assertEqual(status, 200)
