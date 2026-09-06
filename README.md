@@ -78,6 +78,8 @@ Only one operating mode is active at a time. The UI identifies the active mode, 
 
 Use **Bag evidence as JSONL** for the active session. Thermal and Churn provide run-specific downloads once their evidence exists. JSONL records retain timestamps, request identities, raw response bodies, parsed JSON when valid, SSE lifecycle events, and cleanup outcomes.
 
+Downloads use stable names that identify their ownership: `dragonsniff-session.jsonl` for the active session, `dragonsniff-thermal-capture.jsonl` for a retained Thermal run, and `dragonsniff-sse-churn.jsonl` for a retained Churn run.
+
 Exports are currently generated from bounded in-memory recorders. They are not written incrementally and do not survive a DragonSniff process restart. That limitation is the primary blocker to honest always-on Docker support.
 
 ## Documentation

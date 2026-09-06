@@ -41,6 +41,11 @@ STATIC_FILES = {
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/style.css": ("style.css", "text/css; charset=utf-8"),
 }
+EXPORT_FILENAMES = {
+    "session": "dragonsniff-session.jsonl",
+    "capture": "dragonsniff-thermal-capture.jsonl",
+    "churn": "dragonsniff-sse-churn.jsonl",
+}
 
 
 class SessionManager:
@@ -568,7 +573,11 @@ class DragonSniffHandler(BaseHTTPRequestHandler):
                 200,
                 body,
                 "application/x-ndjson; charset=utf-8",
-                {"Content-Disposition": 'attachment; filename="dragonsniff-session.jsonl"'},
+                {
+                    "Content-Disposition": (
+                        f'attachment; filename="{EXPORT_FILENAMES["session"]}"'
+                    )
+                },
             )
         elif path == "/local/v1/churn/export":
             export = self.manager.export_churn_jsonl()
@@ -580,7 +589,11 @@ class DragonSniffHandler(BaseHTTPRequestHandler):
                 200,
                 body,
                 "application/x-ndjson; charset=utf-8",
-                {"Content-Disposition": 'attachment; filename="dragonsniff-churn.jsonl"'},
+                {
+                    "Content-Disposition": (
+                        f'attachment; filename="{EXPORT_FILENAMES["churn"]}"'
+                    )
+                },
             )
         elif path == "/local/v1/capture/export":
             export = self.manager.export_capture_jsonl()
@@ -592,7 +605,11 @@ class DragonSniffHandler(BaseHTTPRequestHandler):
                 200,
                 body,
                 "application/x-ndjson; charset=utf-8",
-                {"Content-Disposition": 'attachment; filename="dragonsniff-capture.jsonl"'},
+                {
+                    "Content-Disposition": (
+                        f'attachment; filename="{EXPORT_FILENAMES["capture"]}"'
+                    )
+                },
             )
         else:
             self._send_json(404, {"error": "not_found"})

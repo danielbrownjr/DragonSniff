@@ -45,6 +45,18 @@ class LocalServerFixture:
         connection.close()
         return result
 
+    def download(self, path: str) -> tuple[int, bytes, str | None]:
+        connection = HTTPConnection("127.0.0.1", self.server.server_port, timeout=2)
+        connection.request("GET", path)
+        response = connection.getresponse()
+        result = (
+            response.status,
+            response.read(),
+            response.getheader("Content-Disposition"),
+        )
+        connection.close()
+        return result
+
 
 class ServerTests(TestCase):
     def test_server_refuses_non_loopback_bind(self) -> None:
@@ -114,6 +126,31 @@ class ServerTests(TestCase):
             json.loads(churn_body), {"error": "churn_evidence_not_available"}
         )
 
+    def test_export_download_names_identify_evidence_ownership(self) -> None:
+        class ExportManager(SessionManager):
+            def export_jsonl(self) -> str:
+                return '{"kind":"session"}\n'
+
+            def export_capture_jsonl(self) -> str:
+                return '{"kind":"capture"}\n'
+
+            def export_churn_jsonl(self) -> str:
+                return '{"kind":"churn"}\n'
+
+        expected = {
+            "/local/v1/session/export": "dragonsniff-session.jsonl",
+            "/local/v1/capture/export": "dragonsniff-thermal-capture.jsonl",
+            "/local/v1/churn/export": "dragonsniff-sse-churn.jsonl",
+        }
+        with LocalServerFixture(ExportManager()) as local:
+            results = {path: local.download(path) for path in expected}
+
+        for path, filename in expected.items():
+            status, body, disposition = results[path]
+            self.assertEqual(status, 200)
+            self.assertTrue(body)
+            self.assertEqual(disposition, f'attachment; filename="{filename}"')
+
     def test_family_ui_favicon_and_unlinked_lab_route_are_served(self) -> None:
         with LocalServerFixture() as local:
             lab_status, lab_body, lab_type = local.request("GET", "/lab")
@@ -165,6 +202,7 @@ class ServerTests(TestCase):
         self.assertIn("Poke it with a stick", html)
         self.assertIn("Watch the dragon breathe", html)
         self.assertIn("Start passive capture", html)
+        self.assertIn("Download thermal capture JSONL", html)
         self.assertIn('id="captureProfile"', html)
         self.assertIn('id="captureBudget"', html)
         self.assertIn('id="thermal-heading">Thermals', html)
@@ -175,6 +213,7 @@ class ServerTests(TestCase):
         self.assertIn('href="favicon.svg"', html)
         self.assertIn('id="labPollInterval"', html)
         self.assertIn("Start bounded churn", html)
+        self.assertIn("Download SSE churn JSONL", html)
         self.assertIn('id="churnDelaySeconds"', html)
         self.assertIn('step="0.05"', html)
         self.assertIn('id="churnSettlement"', html)

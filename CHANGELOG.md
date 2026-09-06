@@ -7,6 +7,7 @@
 - Explicit bind, port, and log-level configuration for future headless/container use.
 - A hardware-independent `/healthz` service-liveness endpoint.
 - A versioned server and Docker readiness roadmap.
+- Distinct filenames for active-session, Thermal-capture, and SSE-churn exports.
 - Dragon-family navigation with separate Dashboard, Thermal, Churn, and Evidence surfaces plus the unlinked `/lab` display controls.
 - Automatic pause and restoration of live observation around completed, cancelled, or failed automated runs.
 - Dedicated Thermal and Churn JSONL downloads that remain available after observation resumes.
