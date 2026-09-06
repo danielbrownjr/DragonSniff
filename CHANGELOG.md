@@ -4,6 +4,9 @@
 
 ### Added
 
+- Explicit bind, port, and log-level configuration for future headless/container use.
+- A hardware-independent `/healthz` service-liveness endpoint.
+- A versioned server and Docker readiness roadmap.
 - Dragon-family navigation with separate Dashboard, Thermal, Churn, and Evidence surfaces plus the unlinked `/lab` display controls.
 - Automatic pause and restoration of live observation around completed, cancelled, or failed automated runs.
 - Dedicated Thermal and Churn JSONL downloads that remain available after observation resumes.
@@ -12,6 +15,8 @@
 
 ### Fixed
 
+- Clarify active mode and consequential stop actions across desktop and compact layouts.
+- Handle SIGTERM with the same bounded session cleanup used by local shutdown.
 - Keep the active timeline and global JSONL export on the same authoritative recorder after an automated run.
 - Preserve a pending observation return across chained automated runs and prevent observer workers from starting after server shutdown.
 - Retain the latest capture and churn evidence independently across later observation sessions and automated runs; unavailable run exports now return 404 instead of a zero-byte evidence file.
