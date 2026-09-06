@@ -1,6 +1,7 @@
 from http.client import HTTPConnection
 import json
 import re
+from tempfile import TemporaryDirectory
 from threading import Event, Thread
 import time
 from unittest import TestCase
@@ -9,6 +10,7 @@ from unittest.mock import patch
 from dragonsniff.capture import CaptureConfig
 from dragonsniff.recording import SessionRecorder
 from dragonsniff.server import DragonSniffServer, SessionManager
+from dragonsniff.storage import SessionStore
 from dragonsniff.target import parse_target
 
 from tests.test_client import DeviceFixture
@@ -210,6 +212,8 @@ class ServerTests(TestCase):
         self.assertIn('id="pidGaugeNeedle"', html)
         self.assertIn('data-page="thermal"', html)
         self.assertIn('data-page="churn"', html)
+        self.assertIn('data-page="history"', html)
+        self.assertIn('id="historyRows"', html)
         self.assertIn('href="favicon.svg"', html)
         self.assertIn('id="labPollInterval"', html)
         self.assertIn("Start bounded churn", html)
@@ -284,6 +288,64 @@ class ServerTests(TestCase):
             self.assertEqual(json.loads(body)["error"], "invalid_request")
             _, body, _ = local.request("GET", "/local/v1/session")
             self.assertEqual(json.loads(body)["session_state"], "idle")
+
+    def test_configured_target_allowlist_rejects_other_valid_targets(self) -> None:
+        manager = SessionManager(allowed_targets=["allowed.local"])
+        with LocalServerFixture(manager) as local:
+            status, body, _ = local.request(
+                "POST", "/local/v1/session/start", {"target": "other.local"}
+            )
+        self.assertEqual(status, 400)
+        self.assertIn("allowlist", json.loads(body)["message"])
+
+    def test_persistent_history_lists_and_downloads_completed_session(self) -> None:
+        with TemporaryDirectory() as temporary, DeviceFixture() as device:
+            manager = SessionManager(
+                store=SessionStore(temporary), allowed_targets=[device.target]
+            )
+            with LocalServerFixture(manager) as local:
+                start_status, start_body, _ = local.request(
+                    "POST", "/local/v1/session/start", {"target": device.target}
+                )
+                session_id = json.loads(start_body)["recorder"]["persistent_session_id"]
+                stop_status, _, _ = local.request(
+                    "POST", "/local/v1/session/stop", {}
+                )
+                history_status, history_body, _ = local.request(
+                    "GET", "/local/v1/history"
+                )
+                detail_status, detail_body, _ = local.request(
+                    "GET", f"/local/v1/history/{session_id}"
+                )
+                export_status, export_body, disposition = local.download(
+                    f"/local/v1/history/{session_id}/export"
+                )
+
+        self.assertEqual((start_status, stop_status), (202, 200))
+        self.assertEqual(history_status, 200)
+        history = json.loads(history_body)
+        self.assertTrue(history["persistent"])
+        self.assertEqual(history["sessions"][0]["session_id"], session_id)
+        self.assertEqual(detail_status, 200)
+        self.assertEqual(json.loads(detail_body)["status"], "completed")
+        self.assertEqual(export_status, 200)
+        self.assertIn(b'"kind":"session_started"', export_body)
+        self.assertIn("dragonsniff-observation-", disposition)
+
+    def test_unknown_history_entry_returns_not_found(self) -> None:
+        with TemporaryDirectory() as temporary:
+            manager = SessionManager(store=SessionStore(temporary))
+            with LocalServerFixture(manager) as local:
+                detail_status, detail_body, _ = local.request(
+                    "GET", f"/local/v1/history/{'0' * 32}"
+                )
+                export_status, export_body, _ = local.request(
+                    "GET", f"/local/v1/history/{'0' * 32}/export"
+                )
+        self.assertEqual(detail_status, 404)
+        self.assertEqual(json.loads(detail_body)["error"], "session_not_found")
+        self.assertEqual(export_status, 404)
+        self.assertEqual(json.loads(export_body)["error"], "session_not_found")
 
     def test_unexpected_host_is_rejected(self) -> None:
         with LocalServerFixture() as local:

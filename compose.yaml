@@ -1,0 +1,25 @@
+services:
+  dragonsniff:
+    build: .
+    init: true
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    ports:
+      - "127.0.0.1:8765:8765"
+    environment:
+      DRAGONSNIFF_ALLOWED_TARGETS: "${DRAGONSNIFF_ALLOWED_TARGETS:?Set DRAGONSNIFF_ALLOWED_TARGETS to one or more comma-separated Dragon addresses}"
+      DRAGONSNIFF_LOG_LEVEL: "${DRAGONSNIFF_LOG_LEVEL:-INFO}"
+      DRAGONSNIFF_RETENTION_BYTES: "${DRAGONSNIFF_RETENTION_BYTES:-268435456}"
+      DRAGONSNIFF_RETENTION_SESSIONS: "${DRAGONSNIFF_RETENTION_SESSIONS:-500}"
+    volumes:
+      - dragonsniff-data:/data
+    stop_grace_period: 15s
+
+volumes:
+  dragonsniff-data:
