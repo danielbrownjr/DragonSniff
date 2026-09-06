@@ -8,7 +8,7 @@
   "use strict";
 
   const MAX_ESTIMATED_RECORDS = 25_000;
-  const PUBLIC_PAGES = Object.freeze(["dashboard", "thermal", "churn", "evidence"]);
+  const PUBLIC_PAGES = Object.freeze(["dashboard", "thermal", "churn", "history", "evidence"]);
 
   function payloadText(result, view) {
     if (!result || (view !== "parsed" && view !== "raw")) return null;

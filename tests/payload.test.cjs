@@ -175,6 +175,7 @@ test("capture budget state gates invalid and oversized schedules", () => {
 
 test("page routing accepts only owned public page names", () => {
   assert.equal(resolvePage("thermal"), "thermal");
+  assert.equal(resolvePage("history"), "history");
   assert.equal(resolvePage("lab"), "dashboard");
   assert.equal(resolvePage("constructor"), "dashboard");
   assert.equal(resolvePage("toString"), "dashboard");
