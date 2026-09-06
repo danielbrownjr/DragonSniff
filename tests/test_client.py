@@ -15,6 +15,13 @@ class FixtureHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         config = self.server.config  # type: ignore[attr-defined]
+        bad_status_once = config.get("bad_status_once", set())
+        if self.path in bad_status_once:
+            bad_status_once.remove(self.path)
+            self.close_connection = True
+            self.wfile.write(b"11\r\n")
+            self.wfile.flush()
+            return
         if self.path == "/api/v2/events":
             if config.get("events_connect_delay"):
                 time.sleep(config["events_connect_delay"])
@@ -141,6 +148,22 @@ class ClientTests(TestCase):
         self.assertIsNotNone(malformed["parse_error"])
         self.assertFalse(oversized["ok"])
         self.assertIn("ResponseTooLargeError", oversized["error"])
+        self.assertEqual(client.budget.active, 0)
+
+    def test_malformed_http_status_line_is_recorded_as_transport_failure(self) -> None:
+        with DeviceFixture({"bad_status_once": {"/api/v2/health"}}) as fixture:
+            recorder = SessionRecorder()
+            client = DragonClient(parse_target(fixture.target), recorder)
+            result = client.fetch_json("/api/v2/health")
+
+        self.assertFalse(result["ok"])
+        self.assertIsNone(result["status"])
+        self.assertIn("BadStatusLine", result["error"])
+        error = next(
+            record for record in recorder.snapshot() if record["kind"] == "http_error"
+        )
+        self.assertEqual(error["endpoint"], "/api/v2/health")
+        self.assertIn("BadStatusLine", error["error"])
         self.assertEqual(client.budget.active, 0)
 
     def test_unavailable_endpoint_preserves_status_and_body(self) -> None:
