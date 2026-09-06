@@ -35,11 +35,15 @@ class SessionRecorder:
         }
         with self._lock:
             record["sequence"] = self._next_sequence
+            self._before_record_visible(record)
             self._next_sequence += 1
             if len(self._records) == self.max_records:
                 self._dropped += 1
             self._records.append(record)
         return deepcopy(record)
+
+    def _before_record_visible(self, record: dict[str, Any]) -> None:
+        """Allow durable recorders to commit a record before exposing it live."""
 
     def snapshot(self) -> list[dict[str, Any]]:
         with self._lock:

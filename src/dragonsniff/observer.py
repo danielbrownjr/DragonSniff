@@ -21,10 +21,15 @@ class Observer:
         *,
         max_records: int = 2_000,
         connection_limit: int = 2,
+        recorder: SessionRecorder | None = None,
         client: DragonClient | None = None,
     ) -> None:
         self.target = target
-        self.recorder = client.recorder if client is not None else SessionRecorder(max_records)
+        self.recorder = (
+            client.recorder
+            if client is not None
+            else (recorder or SessionRecorder(max_records))
+        )
         self.client = client or DragonClient(
             target, self.recorder, connection_limit=connection_limit
         )
