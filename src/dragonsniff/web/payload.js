@@ -71,6 +71,23 @@
     return Object.fromEntries(fields.map((field) => [field, configuration[field]]));
   }
 
+  function captureRecordEstimate(configuration) {
+    if (!configuration || typeof configuration !== "object") return null;
+    const duration = configuration.duration_seconds;
+    const stateInterval = configuration.state_interval_seconds;
+    const healthInterval = configuration.health_interval_seconds;
+    if (![duration, stateInterval, healthInterval].every(
+      (value) => typeof value === "number" && Number.isFinite(value) && value > 0,
+    )) return null;
+
+    // Keep this in lockstep with CaptureConfig.estimated_records(). Each fetch
+    // retains a request and a response/error, plus boundary identity and lifecycle
+    // evidence. The server remains authoritative when a capture is submitted.
+    const stateSamples = Math.ceil(duration / stateInterval) + 2;
+    const healthSamples = Math.ceil(duration / healthInterval) + 2;
+    return (stateSamples + healthSamples + 2) * 2 + 4;
+  }
+
   function thermalSnapshot(result) {
     const state = result?.parsed;
     if (!state || typeof state !== "object" || Array.isArray(state)) return null;
@@ -101,6 +118,7 @@
     churnProfileConfiguration,
     captureSummaryText,
     captureProfileConfiguration,
+    captureRecordEstimate,
     thermalSnapshot,
   };
 });

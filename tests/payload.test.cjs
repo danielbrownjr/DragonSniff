@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 const {
   captureProfileConfiguration,
+  captureRecordEstimate,
   captureSummaryText,
   churnHealthText,
   churnProfileConfiguration,
@@ -134,6 +135,24 @@ test("named capture profiles populate exact editable schedules", () => {
   const selected = captureProfileConfiguration(profiles, "Smoke");
   selected.duration_seconds = 60;
   assert.equal(profiles.Smoke.duration_seconds, 120);
+});
+
+test("capture estimate previews the server retained-record calculation", () => {
+  assert.equal(captureRecordEstimate({
+    duration_seconds: 120,
+    state_interval_seconds: 1,
+    health_interval_seconds: 10,
+  }), 280);
+  assert.equal(captureRecordEstimate({
+    duration_seconds: 43_200,
+    state_interval_seconds: 0.5,
+    health_interval_seconds: 5,
+  }), 190_096);
+  assert.equal(captureRecordEstimate({
+    duration_seconds: 120,
+    state_interval_seconds: 0,
+    health_interval_seconds: 10,
+  }), null);
 });
 
 test("thermal snapshot extracts bounded optional display values", () => {

@@ -108,6 +108,7 @@ class ServerTests(TestCase):
         self.assertIn("Watch the dragon breathe", html)
         self.assertIn("Start passive capture", html)
         self.assertIn('id="captureProfile"', html)
+        self.assertIn('id="captureBudget"', html)
         self.assertIn('id="thermal-heading">Thermals', html)
         self.assertIn('id="pidGauge"', html)
         self.assertIn('id="pidGaugeNeedle"', html)
@@ -126,6 +127,7 @@ class ServerTests(TestCase):
         self.assertIn("Starting a capture pauses an active live session", html)
         self.assertIn("Starting churn pauses an active live session", html)
         self.assertIn("async function startAutomatedTest", app)
+        self.assertIn("function updateCaptureBudget", app)
         self.assertIn('navigateToPage("dashboard")', app)
 
     def test_idle_snapshot_exposes_named_churn_profiles(self) -> None:

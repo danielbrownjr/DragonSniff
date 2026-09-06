@@ -110,6 +110,34 @@ function setCaptureConfiguration(configuration) {
   Object.entries(captureFields).forEach(([name, selector]) => {
     document.querySelector(selector).value = configuration[name];
   });
+  updateCaptureBudget();
+}
+
+function captureConfigurationFromForm() {
+  return {
+    duration_seconds: Number(document.querySelector("#captureDurationSeconds").value),
+    state_interval_seconds: Number(document.querySelector("#captureStateInterval").value),
+    health_interval_seconds: Number(document.querySelector("#captureHealthInterval").value),
+  };
+}
+
+function updateCaptureBudget() {
+  const estimate = payloadTools.captureRecordEstimate(captureConfigurationFromForm());
+  const maximum = Number(currentSnapshot?.capture?.bounds?.max_estimated_records) || 25000;
+  const overBudget = estimate !== null && estimate > maximum;
+  const budget = document.querySelector("#captureBudget");
+  budget.dataset.status = estimate === null || overBudget ? "error" : "available";
+  budget.textContent = estimate === null
+    ? "Enter positive schedule values to preview retained evidence."
+    : overBudget
+      ? `Estimated retained records: ${estimate.toLocaleString()} / ${maximum.toLocaleString()} — shorten the duration or increase an interval.`
+      : `Estimated retained records: ${estimate.toLocaleString()} / ${maximum.toLocaleString()} — schedule fits the evidence budget.`;
+
+  const captureActive = ["running", "stopping"].includes(currentSnapshot?.capture?.state);
+  const churnActive = ["running", "settling", "stopping"].includes(currentSnapshot?.churn?.state);
+  document.querySelector("#captureStartButton").disabled = (
+    captureActive || churnActive || estimate === null || overBudget
+  );
 }
 
 function syncCaptureProfiles(profiles, selectedProfile, configuration) {
@@ -342,9 +370,9 @@ function renderCapture(snapshot) {
     input.disabled = running || stopping;
   });
   document.querySelector("#captureProfile").disabled = running || stopping;
-  document.querySelector("#captureStartButton").disabled = running || stopping || churnActive;
   document.querySelector("#captureStopButton").disabled = !running;
   document.querySelector("#copyCaptureSummary").disabled = payloadTools.captureSummaryText(capture) === null;
+  updateCaptureBudget();
 }
 
 function renderThermals(latestState) {
@@ -468,6 +496,7 @@ if (window.location.protocol === "file:") {
     control.addEventListener("click", () => navigateToPage(control.dataset.page || control.dataset.goPage));
   });
   window.addEventListener("popstate", () => activatePage(pageFromLocation()));
+  window.addEventListener("hashchange", () => activatePage(pageFromLocation()));
   ["#labPollInterval", "#labOpenRaw", "#labDense"].forEach((selector) => {
     document.querySelector(selector).addEventListener("change", applyLabOptions);
   });
@@ -493,15 +522,12 @@ if (window.location.protocol === "file:") {
   document.querySelectorAll("#captureForm input").forEach((input) => {
     input.addEventListener("input", () => {
       document.querySelector("#captureProfile").value = "Custom";
+      updateCaptureBudget();
     });
   });
   document.querySelector("#captureForm").addEventListener("submit", (event) => {
     event.preventDefault();
-    const configuration = {
-      duration_seconds: Number(document.querySelector("#captureDurationSeconds").value),
-      state_interval_seconds: Number(document.querySelector("#captureStateInterval").value),
-      health_interval_seconds: Number(document.querySelector("#captureHealthInterval").value),
-    };
+    const configuration = captureConfigurationFromForm();
     startAutomatedTest(
       "capture",
       "/local/v1/capture/start",

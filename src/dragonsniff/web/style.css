@@ -169,6 +169,9 @@ input, select {
 .capture-card { border-left: 4px solid var(--primary); }
 .capture-card .eyebrow { margin-bottom: 4px; }
 .churn-form, .capture-form { display: grid; gap: 10px; margin-top: 12px; }
+.capture-budget { margin: 0; color: var(--muted-foreground); font-size: .76rem; }
+.capture-budget[data-status="available"] { color: var(--ok); }
+.capture-budget[data-status="error"] { color: var(--bad); font-weight: 600; }
 .profile-field { max-width: 320px; }
 .profile-field select { display: block; width: 100%; margin: 5px 0 3px; }
 .profile-field span { display: block; font-size: .72rem; }
@@ -305,6 +308,15 @@ footer { padding: 24px 0 42px; color: var(--muted-foreground); text-align: cente
 .check-option input { flex: none; width: 16px; height: 16px; padding: 0; }
 body[data-density="dense"] pre { max-height: 230px; font-size: .68rem; }
 body[data-density="dense"] .card { padding: 11px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0s !important;
+    animation-duration: 0s !important;
+    animation-iteration-count: 1 !important;
+  }
+}
 
 @media (max-width: 900px) {
   .summary-grid, .endpoint-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }

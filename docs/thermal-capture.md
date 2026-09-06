@@ -12,6 +12,7 @@ DragonSniff can collect a bounded, deterministic series of raw Dragon API observ
 | Long Haul | 8 hours | 5 seconds | 60 seconds | Observe full thermal soak, equilibrium drift, and long-run resource behavior. |
 
 Every value remains visible and editable. An edited profile becomes **Custom** and is still checked against hard bounds. A schedule is rejected when its estimated request/response records could exceed the retained-session budget. This preserves the project's rule that a completed nominal run must not silently discard its own evidence.
+The Thermal tab previews that estimate while the schedule is edited and disables Start when the configured run would exceed the budget; the server repeats the same validation authoritatively.
 
 ## Evidence model
 

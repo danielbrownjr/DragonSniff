@@ -107,6 +107,7 @@
           <label>State interval seconds<input id="captureStateInterval" type="number" value="1" min="0.5" max="60" step="0.5" required></label>
           <label>Health interval seconds<input id="captureHealthInterval" type="number" value="10" min="5" max="300" step="1" required></label>
         </div>
+        <p id="captureBudget" class="capture-budget" role="status" aria-live="polite">Calculating retained evidence…</p>
         <div class="actions">
           <button id="captureStartButton" type="submit" class="primary">Start passive capture</button>
           <button id="captureStopButton" type="button" disabled>Stop capture</button>
@@ -119,7 +120,7 @@
         <div><span>State samples</span><strong id="captureSamples">0</strong></div>
         <div><span>State failures</span><strong id="captureStateFailures">0</strong></div>
         <div><span>Health failures</span><strong id="captureHealthFailures">0</strong></div>
-        <div><span>Record estimate</span><strong id="captureEstimate">0</strong></div>
+        <div><span>Retained records</span><strong id="captureEstimate">0</strong></div>
         <div><span>Elapsed</span><strong id="captureElapsed">0.0 s</strong></div>
         <div><span>Boot ID</span><strong id="captureBoot">not observed</strong></div>
       </div>
