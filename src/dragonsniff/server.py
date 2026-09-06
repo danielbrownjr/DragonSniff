@@ -41,6 +41,11 @@ STATIC_FILES = {
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/style.css": ("style.css", "text/css; charset=utf-8"),
 }
+EXPORT_FILENAMES = {
+    "session": "dragonsniff-session.jsonl",
+    "capture": "dragonsniff-thermal-capture.jsonl",
+    "churn": "dragonsniff-sse-churn.jsonl",
+}
 
 
 class SessionManager:
@@ -554,7 +559,9 @@ class DragonSniffHandler(BaseHTTPRequestHandler):
         if not self._validate_host():
             return
         path = urlsplit(self.path).path
-        if path in STATIC_FILES:
+        if path == "/healthz":
+            self._send_json(200, {"status": "ok"})
+        elif path in STATIC_FILES:
             name, content_type = STATIC_FILES[path]
             body = files("dragonsniff.web").joinpath(name).read_bytes()
             self._send(200, body, content_type)
@@ -566,7 +573,11 @@ class DragonSniffHandler(BaseHTTPRequestHandler):
                 200,
                 body,
                 "application/x-ndjson; charset=utf-8",
-                {"Content-Disposition": 'attachment; filename="dragonsniff-session.jsonl"'},
+                {
+                    "Content-Disposition": (
+                        f'attachment; filename="{EXPORT_FILENAMES["session"]}"'
+                    )
+                },
             )
         elif path == "/local/v1/churn/export":
             export = self.manager.export_churn_jsonl()
@@ -578,7 +589,11 @@ class DragonSniffHandler(BaseHTTPRequestHandler):
                 200,
                 body,
                 "application/x-ndjson; charset=utf-8",
-                {"Content-Disposition": 'attachment; filename="dragonsniff-churn.jsonl"'},
+                {
+                    "Content-Disposition": (
+                        f'attachment; filename="{EXPORT_FILENAMES["churn"]}"'
+                    )
+                },
             )
         elif path == "/local/v1/capture/export":
             export = self.manager.export_capture_jsonl()
@@ -590,7 +605,11 @@ class DragonSniffHandler(BaseHTTPRequestHandler):
                 200,
                 body,
                 "application/x-ndjson; charset=utf-8",
-                {"Content-Disposition": 'attachment; filename="dragonsniff-capture.jsonl"'},
+                {
+                    "Content-Disposition": (
+                        f'attachment; filename="{EXPORT_FILENAMES["capture"]}"'
+                    )
+                },
             )
         else:
             self._send_json(404, {"error": "not_found"})
@@ -731,15 +750,26 @@ class DragonSniffHandler(BaseHTTPRequestHandler):
 
 
 class DragonSniffServer(ThreadingHTTPServer):
-    """A loopback-only threaded server with bounded device work off-thread."""
+    """A bounded threaded server with a loopback-oriented browser boundary."""
 
     REQUEST_WORKER_LIMIT = 8
     REQUEST_SLOT_TIMEOUT = 0.25
     REQUEST_SOCKET_TIMEOUT = 5.0
 
-    def __init__(self, address: tuple[str, int], manager: SessionManager | None = None) -> None:
-        if address[0] not in {"127.0.0.1", "localhost", "::1"}:
-            raise ValueError("DragonSniff V1 only binds to a loopback address")
+    def __init__(
+        self,
+        address: tuple[str, int],
+        manager: SessionManager | None = None,
+        *,
+        allow_wildcard_bind: bool = False,
+    ) -> None:
+        loopback = {"127.0.0.1", "localhost", "::1"}
+        if address[0] not in loopback and not (
+            allow_wildcard_bind and address[0] == "0.0.0.0"
+        ):
+            raise ValueError(
+                "DragonSniff binds to loopback unless 0.0.0.0 is explicitly enabled"
+            )
         self.session_manager = manager or SessionManager()
         self._request_slots = BoundedSemaphore(self.REQUEST_WORKER_LIMIT)
         super().__init__(address, DragonSniffHandler)

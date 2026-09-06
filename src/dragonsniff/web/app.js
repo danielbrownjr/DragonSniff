@@ -168,6 +168,11 @@ function text(selector, value) {
   document.querySelector(selector).textContent = String(value);
 }
 
+function showNotice(node, message, status = "idle") {
+  node.textContent = message;
+  node.dataset.status = status;
+}
+
 function pretty(value, fallback = "No payload") {
   return value === undefined ? fallback : JSON.stringify(value, null, 2);
 }
@@ -455,9 +460,13 @@ function render(snapshot) {
   renderChurn(snapshot);
   renderCapture(snapshot);
   if (snapshot.automation_return?.error) {
-    notice.textContent = `Automated test finished, but live observation could not resume: ${snapshot.automation_return.error}`;
+    showNotice(
+      notice,
+      `Automated test finished, but live observation could not resume: ${snapshot.automation_return.error}`,
+      "error",
+    );
   } else if (snapshot.active_mode === "observation" && snapshot.automation_return?.resumed_after) {
-    notice.textContent = "Automated test finished. Live observation has resumed.";
+    showNotice(notice, "Automated test finished. Live observation has resumed.", "available");
   }
 }
 
@@ -467,21 +476,21 @@ async function update() {
   try {
     render(await localRequest("/local/v1/session"));
   } catch (error) {
-    notice.textContent = `Local service error: ${error.message}`;
+    showNotice(notice, `Local service error: ${error.message}`, "error");
   } finally {
     requestInFlight = false;
   }
 }
 
 async function act(path, body = {}, statusNode = notice) {
-  statusNode.textContent = "Working...";
+  showNotice(statusNode, "Working...", "requesting");
   try {
     const snapshot = await localRequest(path, {method: "POST", body: JSON.stringify(body)});
     render(snapshot);
-    statusNode.textContent = "Request accepted. Live status will update below.";
+    showNotice(statusNode, "Request accepted. Live status will update below.", "available");
     return snapshot;
   } catch (error) {
-    statusNode.textContent = error.message;
+    showNotice(statusNode, error.message, "error");
     return null;
   }
 }

@@ -44,7 +44,7 @@ Health observations track a present `boot_id`. A change is reported with the two
 4. Run Extended when longer steady-state or resource evidence is useful.
 5. Run Long Haul for a supervised full-system thermal soak when slow enclosure,
    controller, or resource drift is the question.
-6. Use **Download capture JSONL** after each run and name the files externally with the firmware build and test condition. This run-specific export remains available after live observation resumes.
+6. Use **Download thermal capture JSONL** after each run. The stable download name is `dragonsniff-thermal-capture.jsonl`; add the firmware build and test condition when archiving it. This run-specific export remains available after live observation resumes.
 7. Repeat the same profile and physical test condition against the comparison build.
 
 The resulting JSONL supports later analysis of temperatures, targets, requested and delivered output, constraint reasons, heap, uptime, and boot identity when those fields are exposed by the product. DragonSniff preserves those values; it does not decide whether PID tuning, overshoot, settling time, or safety behavior passes. Acceptance criteria remain part of the product's validation plan.
