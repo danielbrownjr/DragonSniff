@@ -13,6 +13,10 @@
 - Dedicated Thermal and Churn JSONL downloads that remain available after observation resumes.
 - Live retained-record budget feedback for passive-capture schedules.
 - Bounded eight-worker local request handling so a slow automation transition does not freeze status polling.
+- Incremental append-only evidence persistence with interrupted-run recovery and bounded retention.
+- Read-only session history API, UI, and purpose-specific historical JSONL downloads.
+- Exact normalized target allowlisting for unattended service operation.
+- A non-root Docker image and host-loopback Compose deployment with persistent storage and health checks.
 
 ### Fixed
 
@@ -22,10 +26,12 @@
 - Preserve a pending observation return across chained automated runs and prevent observer workers from starting after server shutdown.
 - Retain the latest capture and churn evidence independently across later observation sessions and automated runs; unavailable run exports now return 404 instead of a zero-byte evidence file.
 - Validate hash routes against owned page names, scope expert polling preferences to `/lab`, and use valid current-page navigation semantics.
+- Stream historical downloads from a fixed initial file length instead of allocating the complete evidence file in memory.
 
 ### Validation
 
 - Cover resumed exports, cancelled-run restoration, chained automation, shutdown races, route rejection, and capture-budget gating behavior.
+- Cover durable write ordering, crash-window metadata reconciliation, partial-record quarantine, retention, allowlisting, history downloads, and container security defaults.
 
 ## v0.2.0 — 2026-09-05
 

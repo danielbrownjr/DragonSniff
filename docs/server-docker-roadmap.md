@@ -15,28 +15,28 @@ DragonSniff already separates its browser UI from device communication, serves p
 
 ## Runtime-written data
 
-DragonSniff currently writes no application data to disk. Observation, capture, and churn evidence lives in bounded in-memory `SessionRecorder` instances until the browser downloads JSONL.
+When `--data-dir` is configured, DragonSniff incrementally appends observation, capture, and churn evidence to independent session directories. Without it, the original bounded in-memory behavior remains available for short interactive use.
 
 | Data | Current lifetime | Future classification |
 |---|---|---|
-| Active observation records | Process memory | Persistent session data |
-| Completed capture/churn records | Process memory | Persistent session data |
+| Active observation records | Bounded memory + optional JSONL | Persistent session data |
+| Completed capture/churn records | Bounded memory + optional JSONL | Persistent session data |
 | JSONL downloads | Browser-selected location | Export, not service state |
 | Logs | Standard output/error | Container log stream |
 | Static assets | Installed package | Read-only image content |
 
-There is no cache, temporary-file, configuration-file, or generated-report directory today. Adding an unused data-directory option would suggest persistence that does not exist, so this pass intentionally does not add one.
+Persistent mode uses `<data-dir>/sessions/<session-id>/metadata.json` plus `evidence.jsonl`. Metadata replacement is atomic and each JSONL record is appended and flushed before the live recorder reports success. A partial final record is quarantined as `evidence.partial` during recovery.
 
-## Blocking work before a supported Docker service
+## Implemented Docker-service foundation
 
-1. **Incremental evidence persistence.** Define an append-safe session format and write records as they arrive rather than only at download time.
-2. **Interrupted-run recovery.** On startup, classify an unfinished session truthfully and keep its evidence exportable.
-3. **Retention.** Bound stored evidence by age and/or total size before unattended operation.
-4. **Historical sessions.** Add a read-only session index and downloads without letting stale completed work replace the active session.
-5. **Target allowlist.** Keep the four fixed device paths and add an explicit set of permitted Dragon targets for an always-on service.
-6. **Container validation.** Only then add and exercise a non-root image, Compose example, volume, healthcheck, restart behavior, and stop/restart tests.
+1. **Incremental evidence persistence.** Records are append-only JSONL and remain bounded in live memory.
+2. **Interrupted-run recovery.** Startup truthfully classifies unfinished sessions without resuming device work.
+3. **Retention.** Stored evidence is bounded by both total bytes and session count.
+4. **Historical sessions.** Read-only API/UI history and downloads remain separate from active state.
+5. **Target allowlist.** Exact normalized Dragon origins may be explicitly permitted; the container requires at least one.
+6. **Container boundary.** The image is non-root and Compose supplies a volume, loopback-only publish, healthcheck, restart policy, read-only root filesystem, and dropped capabilities.
 
-Until those items exist, a Dockerfile would package an ephemeral process while implying persistence and recovery that DragonSniff cannot provide.
+Image build and real container stop/restart validation still require a host with Docker available. The normal host and browser suites validate the underlying persistence, recovery, history, and allowlist behavior without Docker.
 
 ## Intended container boundary
 

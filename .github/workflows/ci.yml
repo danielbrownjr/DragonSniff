@@ -44,3 +44,68 @@ jobs:
           node --check src/dragonsniff/web/payload.js
           node --check src/dragonsniff/web/app.js
           node --test tests/payload.test.cjs
+
+  container:
+    name: Container restart
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Validate Compose configuration
+        env:
+          DRAGONSNIFF_ALLOWED_TARGETS: http://127.0.0.1:9
+        run: docker compose config --quiet
+
+      - name: Build non-root image
+        run: docker build --tag dragonsniff:ci .
+
+      - name: Verify persistence and interrupted-run recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          cleanup() {
+            docker rm --force dragonsniff-ci >/dev/null 2>&1 || true
+            docker volume rm dragonsniff-ci-data >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          docker volume create dragonsniff-ci-data >/dev/null
+          start_container() {
+            docker run --detach --name dragonsniff-ci \
+              --read-only --tmpfs /tmp --cap-drop ALL \
+              --security-opt no-new-privileges \
+              --publish 127.0.0.1:8765:8765 \
+              --volume dragonsniff-ci-data:/data \
+              --env DRAGONSNIFF_ALLOWED_TARGETS=http://127.0.0.1:9 \
+              dragonsniff:ci >/dev/null
+            for attempt in {1..20}; do
+              if curl --fail --silent http://127.0.0.1:8765/healthz >/dev/null; then
+                return
+              fi
+              sleep 0.5
+            done
+            docker logs dragonsniff-ci
+            return 1
+          }
+          start_container
+          test "$(docker exec dragonsniff-ci python -c 'import os; print(os.getuid())')" != "0"
+          curl --fail --silent \
+            --header 'Content-Type: application/json' \
+            --data '{"target":"http://127.0.0.1:9"}' \
+            http://127.0.0.1:8765/local/v1/session/start >/dev/null
+          docker kill --signal KILL dragonsniff-ci >/dev/null
+          docker rm dragonsniff-ci >/dev/null
+          start_container
+          curl --fail --silent http://127.0.0.1:8765/local/v1/history \
+            | python -c 'import json,sys; data=json.load(sys.stdin); assert data["persistent"] and any(item["status"] == "interrupted" for item in data["sessions"])'
+          curl --fail --silent \
+            --header 'Content-Type: application/json' \
+            --data '{"target":"http://127.0.0.1:9"}' \
+            http://127.0.0.1:8765/local/v1/session/start >/dev/null
+          docker stop --time 10 dragonsniff-ci >/dev/null
+          docker rm dragonsniff-ci >/dev/null
+          start_container
+          curl --fail --silent http://127.0.0.1:8765/local/v1/history \
+            | python -c 'import json,sys; data=json.load(sys.stdin); statuses={item["status"] for item in data["sessions"]}; assert {"completed", "interrupted"} <= statuses'

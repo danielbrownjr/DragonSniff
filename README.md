@@ -8,13 +8,14 @@ DragonSniff gives firmware developers one place to inspect Dragon HTTP APIs, fol
 
 ## What it does
 
-DragonSniff connects to one authorized device and exposes four focused browser surfaces:
+DragonSniff connects to one authorized device and exposes five focused browser surfaces:
 
 | Surface | Purpose |
 |---|---|
 | **Dashboard** | Start or stop live observation and see connection/session state. |
 | **Thermal** | Run a bounded passive state/health capture with live thermal context. |
 | **Churn** | Exercise sequential SSE connect/observe/disconnect lifecycles. |
+| **History** | Review and download durable completed or interrupted sessions. |
 | **Evidence** | Inspect raw and parsed responses, event history, and exports. |
 
 An unlinked `/lab` route contains display-only expert options. Hidden does not mean authenticated; the network boundary remains authoritative.
@@ -53,7 +54,7 @@ dragonsniff --target dragonbreath.local --port 8765
 
 Do not open `src/dragonsniff/web/index.html` directly. The browser UI depends on the local DragonSniff service.
 
-### Server-preparation options
+### Persistent local service
 
 Local operation remains the safe default:
 
@@ -61,16 +62,46 @@ Local operation remains the safe default:
 dragonsniff --bind 127.0.0.1 --port 8765 --log-level INFO
 ```
 
-The same values may be supplied as `DRAGONSNIFF_BIND`, `DRAGONSNIFF_PORT`, and `DRAGONSNIFF_LOG_LEVEL`. An explicit `--bind 0.0.0.0` is available for future container use, but DragonSniff still accepts only loopback-style browser Host values. A future container must therefore publish the service to host loopback, not the LAN. `GET /healthz` reports whether the local web service is responsive and does not require device connectivity.
+The same values may be supplied as `DRAGONSNIFF_BIND`, `DRAGONSNIFF_PORT`, and `DRAGONSNIFF_LOG_LEVEL`. Add a data directory and explicit device allowlist for durable unattended use:
 
-DragonSniff does not open a browser itself, so the current process already runs headlessly. SIGINT and SIGTERM both trigger bounded session cleanup before the server closes.
+```console
+dragonsniff --data-dir ./dragonsniff-data --allow-target dragonbreath.local --require-allowlist
+```
+
+Every observation, Thermal capture, and Churn run is then appended to its own JSONL file as records arrive. Startup marks a previously active session as `interrupted`; it remains downloadable and is never silently resumed. Storage defaults to at most 500 sessions and 256 MiB, with oldest finished sessions removed first. Active sessions are never removed by retention.
+
+Use `--retention-sessions` and `--retention-bytes` to change those bounds. `DRAGONSNIFF_DATA_DIR`, `DRAGONSNIFF_ALLOWED_TARGETS`, `DRAGONSNIFF_REQUIRE_ALLOWLIST`, `DRAGONSNIFF_RETENTION_SESSIONS`, and `DRAGONSNIFF_RETENTION_BYTES` provide the equivalent environment configuration. Comma-separate multiple environment allowlist entries.
+
+`GET /healthz` reports whether the local web service is responsive and does not require device connectivity.
+
+DragonSniff does not open a browser itself. SIGINT and SIGTERM both trigger bounded session cleanup before the server closes.
+
+### Docker Compose
+
+Set the Dragon addresses the service may contact, then build and start it:
+
+```powershell
+$env:DRAGONSNIFF_ALLOWED_TARGETS = "http://192.0.2.40"
+docker compose up --build -d
+```
+
+Open `http://127.0.0.1:8765`. Compose publishes only to host loopback, runs the application as a non-root user with a read-only container filesystem, and stores evidence in the `dragonsniff-data` volume. Direct IP addresses are generally more reliable than `.local` names across Docker Desktop networking.
+
+Stop and restart without losing evidence:
+
+```console
+docker compose stop
+docker compose start
+```
+
+Use `docker compose down` to remove the container while retaining the named volume. Adding `--volumes` intentionally removes stored evidence.
 
 ## Concepts
 
 - **Observer:** fetches the three JSON endpoints and holds one SSE stream. Stop/reconnect controls affect the stream without silently replacing the session.
 - **Capture:** polls fixed state and health endpoints on a bounded schedule. It pauses live observation and restores it after cleanup.
 - **Churn:** performs bounded, sequential SSE lifecycle exercises. Capacity rejection and cleanup timing are retained as evidence.
-- **Session recorder:** stores ordered raw and parsed observations in bounded memory for JSONL export.
+- **Session recorder:** stores ordered raw and parsed observations in bounded memory and, when configured, appends them to durable JSONL evidence.
 
 Only one operating mode is active at a time. The UI identifies the active mode, whether it is running/stopping/complete, and which evidence export is available. Completed Thermal and Churn evidence remains separately downloadable after observation resumes; the global export follows the session currently shown.
 
@@ -80,7 +111,7 @@ Use **Bag evidence as JSONL** for the active session. Thermal and Churn provide 
 
 Downloads use stable names that identify their ownership: `dragonsniff-session.jsonl` for the active session, `dragonsniff-thermal-capture.jsonl` for a retained Thermal run, and `dragonsniff-sse-churn.jsonl` for a retained Churn run.
 
-Exports are currently generated from bounded in-memory recorders. They are not written incrementally and do not survive a DragonSniff process restart. That limitation is the primary blocker to honest always-on Docker support.
+The active-run downloads remain available. With persistent storage enabled, **History** also lists independently downloadable observation, Thermal, and Churn sessions after a process or container restart.
 
 ## Documentation
 
@@ -111,7 +142,7 @@ python -m unittest discover -s tests -v
 
 ## Status and boundaries
 
-DragonSniff is developer tooling at version 0.2.0. Live observation, bounded SSE churn, passive thermal capture, and JSONL export are implemented. Evidence persistence, restart recovery, authentication, remote multi-user operation, and a supported Docker image are not.
+DragonSniff is developer tooling at version 0.2.0. Live observation, bounded SSE churn, passive thermal capture, durable JSONL evidence, restart recovery, bounded retention, and a host-local Docker deployment are implemented. Authentication and remote multi-user operation are not.
 
 The tool does not provide actuator controls, settings editing, PID tuning, OTA, provisioning, cloud telemetry, or safety policy. Device firmware remains responsible for authentication, validation, interlocks, and safe behavior.
 
