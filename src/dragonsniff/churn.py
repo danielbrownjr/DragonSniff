@@ -153,6 +153,7 @@ class ChurnRunner:
         self.run_id = uuid4().hex
         self._lock = Lock()
         self._cancel = Event()
+        self._finished = Event()
         self._settlement_interrupt = Event()
         self._settlement_schedule = (
             self.SETTLEMENT_SAMPLE_SECONDS
@@ -298,6 +299,7 @@ class ChurnRunner:
                 self._pending_terminal = terminal
                 if self._state["state"] not in self.TERMINAL_STATES:
                     self._state["state"] = "stopping"
+            self._finish_if_complete()
 
     def _run_cycle(self, cycle: int) -> None:
         cycle_started_ns = time.monotonic_ns()
@@ -670,12 +672,17 @@ class ChurnRunner:
     def _finish_if_complete(self) -> bool:
         with self._lock:
             if self._state["state"] in self.TERMINAL_STATES:
+                self._finished.set()
                 return True
             thread = self._thread
             stream_thread = self._stream_thread
             if self._pending_terminal is None:
                 return False
-            if thread is not None and thread.is_alive():
+            if (
+                thread is not None
+                and thread is not current_thread()
+                and thread.is_alive()
+            ):
                 return False
             if stream_thread is not None and stream_thread.is_alive():
                 return False
@@ -706,7 +713,16 @@ class ChurnRunner:
                 cleanup_complete=True,
                 summary=self._compact_summary(result),
             )
+        self._finished.set()
         return True
+
+    def wait_finished(self, timeout: float | None = None) -> bool:
+        """Wait until terminal evidence and local cleanup are complete."""
+        self._finish_if_complete()
+        if self._finished.wait(timeout):
+            return True
+        self._finish_if_complete()
+        return self._finished.is_set()
 
     def snapshot(self, recent_records: int = 100) -> dict[str, Any]:
         self._finish_if_complete()

@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Dragon-family navigation with separate Dashboard, Thermal, Churn, and Evidence surfaces plus the unlinked `/lab` display controls.
+- Automatic pause and restoration of live observation around completed, cancelled, or failed automated runs.
+- Dedicated Thermal and Churn JSONL downloads that remain available after observation resumes.
+- Live retained-record budget feedback for passive-capture schedules.
+- Bounded eight-worker local request handling so a slow automation transition does not freeze status polling.
+
+### Fixed
+
+- Keep the active timeline and global JSONL export on the same authoritative recorder after an automated run.
+- Preserve a pending observation return across chained automated runs and prevent observer workers from starting after server shutdown.
+- Retain the latest capture and churn evidence independently across later observation sessions and automated runs; unavailable run exports now return 404 instead of a zero-byte evidence file.
+- Validate hash routes against owned page names, scope expert polling preferences to `/lab`, and use valid current-page navigation semantics.
+
+### Validation
+
+- Cover resumed exports, cancelled-run restoration, chained automation, shutdown races, route rejection, and capture-budget gating behavior.
+
 ## v0.2.0 — 2026-09-05
 
 ### Added

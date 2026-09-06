@@ -220,7 +220,7 @@ class Observer:
             "max_response_bytes": self.client.max_response_bytes,
             "max_sse_event_bytes": self.client.max_event_bytes,
             "max_session_records": self.recorder.max_records,
-            "local_request_concurrency": 1,
+            "local_request_concurrency": 8,
             "sse_connect_timeout_seconds": self.client.sse_connect_timeout,
             "sse_inactivity_timeout": "disabled",
         }

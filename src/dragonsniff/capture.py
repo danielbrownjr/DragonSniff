@@ -170,6 +170,7 @@ class CaptureRunner:
         self.run_id = uuid4().hex
         self._lock = Lock()
         self._cancel = Event()
+        self._finished = Event()
         self._thread: Thread | None = None
         self._started_ns: int | None = None
         self._state: dict[str, Any] = {
@@ -331,7 +332,7 @@ class CaptureRunner:
         with self._lock:
             final = "cancelled" if self._cancel.is_set() else outcome
             self._state["state"] = final
-            self._state["cleanup_complete"] = self.client.budget.active == 0
+            self._state["cleanup_complete"] = False
             elapsed_ms = self._elapsed_ms()
             self._state["elapsed_ms"] = elapsed_ms
             samples_completed = self._state["samples_completed"]
@@ -345,18 +346,34 @@ class CaptureRunner:
         )
         with self._lock:
             self._state["end_timestamp"] = record["timestamp"]
+        self._finish_if_complete()
+
+    def wait_finished(self, timeout: float | None = None) -> bool:
+        """Wait until terminal evidence and local cleanup are complete."""
+        self._finish_if_complete()
+        if self._finished.wait(timeout):
+            return True
+        self._finish_if_complete()
+        return self._finished.is_set()
 
     def _finish_if_complete(self) -> bool:
         with self._lock:
             thread = self._thread
-            if thread is not None and thread.is_alive():
+            if (
+                thread is not None
+                and thread.is_alive()
+                and thread is not current_thread()
+            ):
                 return False
             if self.client.budget.active != 0:
                 return False
             if self._state["state"] == "stopping":
                 return False
             self._state["cleanup_complete"] = True
-            return self._state["state"] in self.TERMINAL_STATES
+            finished = self._state["state"] in self.TERMINAL_STATES
+            if finished:
+                self._finished.set()
+            return finished
 
     def snapshot(self, recent_records: int = 100) -> dict[str, Any]:
         self._finish_if_complete()

@@ -9,6 +9,71 @@ let requestInFlight = false;
 let currentSnapshot = null;
 let churnProfiles = {};
 let captureProfiles = {};
+let updateTimer = null;
+
+const pageCopy = {
+  dashboard: ["DragonSniff", "Sniff out one Dragon, follow the smoke, and bag the raw evidence."],
+  thermal: ["Thermal capture", "Run bounded state and health sampling with live chamber, target, PTC, and PID telemetry."],
+  churn: ["Churn stress", "Exercise repeated SSE connection lifecycles and verify that the device settles cleanly."],
+  evidence: ["Evidence", "Inspect the exact parsed and raw observations retained by this local session."],
+  lab: ["Super Secret Squirrel Laboratory", "Expert display controls and the complete raw evidence surface."],
+};
+
+function pageFromLocation() {
+  const candidate = window.location.hash.replace(/^#/, "");
+  return payloadTools.resolvePage(candidate, window.location.pathname === "/lab");
+}
+
+function activatePage(page) {
+  const selected = payloadTools.resolvePage(page, window.location.pathname === "/lab");
+  document.body.dataset.page = selected;
+  text("#pageTitle", pageCopy[selected][0]);
+  text("#pageDescription", pageCopy[selected][1]);
+  document.querySelectorAll(".tab[data-page]").forEach((tab) => {
+    if (tab.dataset.page === selected) tab.setAttribute("aria-current", "page");
+    else tab.removeAttribute("aria-current");
+  });
+  document.querySelectorAll("[data-page-content]").forEach((section) => {
+    section.hidden = !section.dataset.pageContent.split(/\s+/).includes(selected);
+  });
+  document.title = selected === "dashboard"
+    ? "DragonSniff"
+    : `${pageCopy[selected][0]} · DragonSniff`;
+}
+
+function navigateToPage(page) {
+  const destination = page === "dashboard" ? "/" : `/#${page}`;
+  window.history.pushState(null, "", destination);
+  activatePage(page);
+}
+
+function scheduleUpdates(interval) {
+  if (updateTimer !== null) window.clearInterval(updateTimer);
+  updateTimer = window.setInterval(update, interval);
+}
+
+function applyLabOptions(persist = true) {
+  const poll = Number(document.querySelector("#labPollInterval").value) || 1000;
+  const openRaw = document.querySelector("#labOpenRaw").checked;
+  const dense = document.querySelector("#labDense").checked;
+  document.body.dataset.density = dense ? "dense" : "normal";
+  document.querySelectorAll('[data-copy-view="raw"]').forEach((button) => {
+    button.closest("details").open = openRaw;
+  });
+  if (persist) {
+    localStorage.setItem("dragonsniff.lab.poll", String(poll));
+    localStorage.setItem("dragonsniff.lab.openRaw", String(openRaw));
+    localStorage.setItem("dragonsniff.lab.dense", String(dense));
+  }
+  scheduleUpdates(poll);
+}
+
+function loadLabOptions() {
+  document.querySelector("#labPollInterval").value = localStorage.getItem("dragonsniff.lab.poll") || "1000";
+  document.querySelector("#labOpenRaw").checked = localStorage.getItem("dragonsniff.lab.openRaw") === "true";
+  document.querySelector("#labDense").checked = localStorage.getItem("dragonsniff.lab.dense") === "true";
+  applyLabOptions(false);
+}
 
 const churnFields = {
   cycles: "#churnCycles",
@@ -39,7 +104,7 @@ function syncChurnProfiles(profiles, selectedProfile, configuration) {
     option.textContent = name;
     selector.append(option);
   });
-  selector.value = selectedProfile in profiles ? selectedProfile : "Custom";
+  selector.value = Object.hasOwn(profiles, selectedProfile) ? selectedProfile : "Custom";
   setChurnConfiguration(
     payloadTools.churnProfileConfiguration(profiles, selectedProfile) || configuration,
   );
@@ -49,6 +114,38 @@ function setCaptureConfiguration(configuration) {
   Object.entries(captureFields).forEach(([name, selector]) => {
     document.querySelector(selector).value = configuration[name];
   });
+  updateCaptureBudget();
+}
+
+function captureConfigurationFromForm() {
+  return {
+    duration_seconds: Number(document.querySelector("#captureDurationSeconds").value),
+    state_interval_seconds: Number(document.querySelector("#captureStateInterval").value),
+    health_interval_seconds: Number(document.querySelector("#captureHealthInterval").value),
+  };
+}
+
+function updateCaptureBudget() {
+  const configuredMaximum = Number(currentSnapshot?.capture?.bounds?.max_estimated_records);
+  const state = payloadTools.captureBudgetState(
+    captureConfigurationFromForm(),
+    Number.isFinite(configuredMaximum) ? configuredMaximum : payloadTools.MAX_ESTIMATED_RECORDS,
+  );
+  const {estimate, maximum, allowed} = state;
+  const budget = document.querySelector("#captureBudget");
+  budget.dataset.status = allowed ? "available" : "error";
+  const message = estimate === null
+    ? "Enter positive schedule values to preview retained evidence."
+    : !allowed
+      ? `Estimated retained records: ${estimate.toLocaleString()} / ${maximum.toLocaleString()} — shorten the duration or increase an interval.`
+      : `Estimated retained records: ${estimate.toLocaleString()} / ${maximum.toLocaleString()} — schedule fits the evidence budget.`;
+  if (budget.textContent !== message) budget.textContent = message;
+
+  const captureActive = ["running", "stopping"].includes(currentSnapshot?.capture?.state);
+  const churnActive = ["running", "settling", "stopping"].includes(currentSnapshot?.churn?.state);
+  document.querySelector("#captureStartButton").disabled = (
+    captureActive || churnActive || !allowed
+  );
 }
 
 function syncCaptureProfiles(profiles, selectedProfile, configuration) {
@@ -61,7 +158,7 @@ function syncCaptureProfiles(profiles, selectedProfile, configuration) {
     option.textContent = name;
     selector.append(option);
   });
-  selector.value = selectedProfile in profiles ? selectedProfile : "Custom";
+  selector.value = Object.hasOwn(profiles, selectedProfile) ? selectedProfile : "Custom";
   setCaptureConfiguration(
     payloadTools.captureProfileConfiguration(profiles, selectedProfile) || configuration,
   );
@@ -210,7 +307,6 @@ function renderChurn(snapshot) {
   const settling = state === "settling";
   const stopping = state === "stopping";
   const churnActive = running || settling || stopping;
-  const normalActive = !["idle", "stopped"].includes(snapshot.session_state);
   const captureActive = ["running", "stopping"].includes(snapshot.capture?.state);
   text("#churnState", state);
   document.querySelector("#churnState").dataset.status = state;
@@ -247,10 +343,11 @@ function renderChurn(snapshot) {
   const inputs = document.querySelectorAll("#churnForm input");
   inputs.forEach((input) => { input.disabled = churnActive; });
   document.querySelector("#churnProfile").disabled = churnActive;
-  document.querySelector("#churnStartButton").disabled = churnActive || normalActive || captureActive;
+  document.querySelector("#churnStartButton").disabled = churnActive || captureActive;
   document.querySelector("#churnStopButton").disabled = !running;
   document.querySelector("#copyChurnSummary").disabled = payloadTools.churnSummaryText(churn) === null;
   document.querySelector("#copyChurnHealth").disabled = payloadTools.churnHealthText(churn) === null;
+  document.querySelector("#churnExportLink").hidden = !churn.run_id;
 }
 
 function renderCapture(snapshot) {
@@ -259,7 +356,6 @@ function renderCapture(snapshot) {
   const state = capture.state || "idle";
   const running = state === "running";
   const stopping = state === "stopping";
-  const normalActive = !["idle", "stopped"].includes(snapshot.session_state);
   const churnActive = ["running", "stopping"].includes(snapshot.churn?.state);
   text("#captureState", state);
   document.querySelector("#captureState").dataset.status = state;
@@ -283,9 +379,10 @@ function renderCapture(snapshot) {
     input.disabled = running || stopping;
   });
   document.querySelector("#captureProfile").disabled = running || stopping;
-  document.querySelector("#captureStartButton").disabled = running || stopping || normalActive || churnActive;
   document.querySelector("#captureStopButton").disabled = !running;
   document.querySelector("#copyCaptureSummary").disabled = payloadTools.captureSummaryText(capture) === null;
+  document.querySelector("#captureExportLink").hidden = !capture.run_id;
+  updateCaptureBudget();
 }
 
 function renderThermals(latestState) {
@@ -357,6 +454,11 @@ function render(snapshot) {
   document.querySelector("#stopButton").disabled = !active || stopping;
   renderChurn(snapshot);
   renderCapture(snapshot);
+  if (snapshot.automation_return?.error) {
+    notice.textContent = `Automated test finished, but live observation could not resume: ${snapshot.automation_return.error}`;
+  } else if (snapshot.active_mode === "observation" && snapshot.automation_return?.resumed_after) {
+    notice.textContent = "Automated test finished. Live observation has resumed.";
+  }
 }
 
 async function update() {
@@ -377,8 +479,10 @@ async function act(path, body = {}, statusNode = notice) {
     const snapshot = await localRequest(path, {method: "POST", body: JSON.stringify(body)});
     render(snapshot);
     statusNode.textContent = "Request accepted. Live status will update below.";
+    return snapshot;
   } catch (error) {
     statusNode.textContent = error.message;
+    return null;
   }
 }
 
@@ -388,6 +492,15 @@ if (window.location.protocol === "file:") {
   document.querySelector("footer").hidden = true;
   document.querySelector("#sessionBadge").textContent = "service required";
 } else {
+  activatePage(pageFromLocation());
+  document.querySelectorAll("[data-go-page]").forEach((control) => {
+    control.addEventListener("click", () => navigateToPage(control.dataset.goPage));
+  });
+  window.addEventListener("popstate", () => activatePage(pageFromLocation()));
+  window.addEventListener("hashchange", () => activatePage(pageFromLocation()));
+  ["#labPollInterval", "#labOpenRaw", "#labDense"].forEach((selector) => {
+    document.querySelector(selector).addEventListener("change", () => applyLabOptions());
+  });
   document.querySelector("#connectForm").addEventListener("submit", (event) => {
     event.preventDefault();
     const target = targetInput.value.trim();
@@ -410,16 +523,17 @@ if (window.location.protocol === "file:") {
   document.querySelectorAll("#captureForm input").forEach((input) => {
     input.addEventListener("input", () => {
       document.querySelector("#captureProfile").value = "Custom";
+      updateCaptureBudget();
     });
   });
   document.querySelector("#captureForm").addEventListener("submit", (event) => {
     event.preventDefault();
-    const configuration = {
-      duration_seconds: Number(document.querySelector("#captureDurationSeconds").value),
-      state_interval_seconds: Number(document.querySelector("#captureStateInterval").value),
-      health_interval_seconds: Number(document.querySelector("#captureHealthInterval").value),
-    };
-    act("/local/v1/capture/start", {target: targetInput.value.trim(), configuration}, captureNotice);
+    const configuration = captureConfigurationFromForm();
+    act(
+      "/local/v1/capture/start",
+      {target: targetInput.value.trim(), configuration},
+      captureNotice,
+    );
   });
   document.querySelector("#captureStopButton").addEventListener("click", () => {
     act("/local/v1/capture/stop", {}, captureNotice);
@@ -447,7 +561,11 @@ if (window.location.protocol === "file:") {
       max_events: Number(document.querySelector("#churnMaxEvents").value),
       delay_seconds: Number(document.querySelector("#churnDelaySeconds").value),
     };
-    act("/local/v1/churn/start", {target: targetInput.value.trim(), configuration}, churnNotice);
+    act(
+      "/local/v1/churn/start",
+      {target: targetInput.value.trim(), configuration},
+      churnNotice,
+    );
   });
   document.querySelector("#churnStopButton").addEventListener("click", () => {
     act("/local/v1/churn/stop", {}, churnNotice);
@@ -464,5 +582,6 @@ if (window.location.protocol === "file:") {
 
   targetInput.value = localStorage.getItem("dragonsniff.target") || "";
   update();
-  setInterval(update, 1000);
+  if (window.location.pathname === "/lab") loadLabOptions();
+  else scheduleUpdates(1000);
 }

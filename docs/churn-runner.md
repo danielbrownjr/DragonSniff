@@ -28,7 +28,7 @@ Comment-only SSE blocks are retained as `sse_comment` transport evidence but do 
 | Application events per cycle | 3 | 1 | 25 |
 | Delay seconds | 0.5 | 0.1 | 5.0 |
 
-The runner has no infinite mode and no concurrency option. It owns at most one SSE stream. Its `DragonClient` still has the existing two-permit local budget so a health request can be sampled while that stream is open. Normal observation and churn are mutually exclusive and the backend enforces that boundary.
+The runner has no infinite mode and no concurrency option. It owns at most one SSE stream. Its `DragonClient` still has the existing two-permit local budget so a health request can be sampled while that stream is open. Starting churn pauses active normal observation after its workers and permits are reclaimed; the backend restores observation after completed, cancelled, or failed churn cleanup. Churn and passive capture remain mutually exclusive.
 
 ## Repeatable profiles
 
@@ -42,7 +42,7 @@ Selecting a profile fills the ordinary configuration fields. Editing any field m
 
 ## Evidence and export
 
-The existing bounded `SessionRecorder` and JSONL export are reused. Raw payloads and unknown fields are not normalized away. Evidence includes:
+The existing bounded `SessionRecorder` and a run-specific JSONL export are reused. The global session export always follows the active timeline, while **Download churn JSONL** keeps this run's evidence reachable after normal observation resumes. Raw payloads and unknown fields are not normalized away. Evidence includes:
 
 - run start, configuration, target, bounds, and run ID
 - cycle start and finish summaries

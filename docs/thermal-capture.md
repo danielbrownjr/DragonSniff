@@ -12,6 +12,7 @@ DragonSniff can collect a bounded, deterministic series of raw Dragon API observ
 | Long Haul | 8 hours | 5 seconds | 60 seconds | Observe full thermal soak, equilibrium drift, and long-run resource behavior. |
 
 Every value remains visible and editable. An edited profile becomes **Custom** and is still checked against hard bounds. A schedule is rejected when its estimated request/response records could exceed the retained-session budget. This preserves the project's rule that a completed nominal run must not silently discard its own evidence.
+The Thermal tab previews that estimate while the schedule is edited and disables Start when the configured run would exceed the budget; the server repeats the same validation authoritatively.
 
 ## Evidence model
 
@@ -43,7 +44,7 @@ Health observations track a present `boot_id`. A change is reported with the two
 4. Run Extended when longer steady-state or resource evidence is useful.
 5. Run Long Haul for a supervised full-system thermal soak when slow enclosure,
    controller, or resource drift is the question.
-6. Export JSONL after each run and name the files externally with the firmware build and test condition.
+6. Use **Download capture JSONL** after each run and name the files externally with the firmware build and test condition. This run-specific export remains available after live observation resumes.
 7. Repeat the same profile and physical test condition against the comparison build.
 
 The resulting JSONL supports later analysis of temperatures, targets, requested and delivered output, constraint reasons, heap, uptime, and boot identity when those fields are exposed by the product. DragonSniff preserves those values; it does not decide whether PID tuning, overshoot, settling time, or safety behavior passes. Acceptance criteria remain part of the product's validation plan.

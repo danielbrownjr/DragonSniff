@@ -1,10 +1,14 @@
 (function (root, factory) {
   "use strict";
+
   const api = factory();
   if (typeof module === "object" && module.exports) module.exports = api;
   if (root) root.DragonSniffPayload = api;
 })(typeof window === "undefined" ? null : window, function () {
   "use strict";
+
+  const MAX_ESTIMATED_RECORDS = 25_000;
+  const PUBLIC_PAGES = Object.freeze(["dashboard", "thermal", "churn", "evidence"]);
 
   function payloadText(result, view) {
     if (!result || (view !== "parsed" && view !== "raw")) return null;
@@ -71,6 +75,40 @@
     return Object.fromEntries(fields.map((field) => [field, configuration[field]]));
   }
 
+  function captureRecordEstimate(configuration) {
+    if (!configuration || typeof configuration !== "object") return null;
+    const duration = configuration.duration_seconds;
+    const stateInterval = configuration.state_interval_seconds;
+    const healthInterval = configuration.health_interval_seconds;
+    if (![duration, stateInterval, healthInterval].every(
+      (value) => typeof value === "number" && Number.isFinite(value) && value > 0,
+    )) return null;
+
+    // Keep this in lockstep with CaptureConfig.estimated_records(). Each fetch
+    // retains a request and a response/error, plus boundary identity and lifecycle
+    // evidence. The server remains authoritative when a capture is submitted.
+    const stateSamples = Math.ceil(duration / stateInterval) + 2;
+    const healthSamples = Math.ceil(duration / healthInterval) + 2;
+    return (stateSamples + healthSamples + 2) * 2 + 4;
+  }
+
+  function captureBudgetState(configuration, maximum = MAX_ESTIMATED_RECORDS) {
+    const estimate = captureRecordEstimate(configuration);
+    const validMaximum = typeof maximum === "number" && Number.isFinite(maximum) && maximum > 0
+      ? maximum
+      : MAX_ESTIMATED_RECORDS;
+    return {
+      estimate,
+      maximum: validMaximum,
+      allowed: estimate !== null && estimate <= validMaximum,
+    };
+  }
+
+  function resolvePage(candidate, labRoute = false) {
+    if (labRoute) return "lab";
+    return PUBLIC_PAGES.includes(candidate) ? candidate : "dashboard";
+  }
+
   function thermalSnapshot(result) {
     const state = result?.parsed;
     if (!state || typeof state !== "object" || Array.isArray(state)) return null;
@@ -101,6 +139,10 @@
     churnProfileConfiguration,
     captureSummaryText,
     captureProfileConfiguration,
+    captureRecordEstimate,
+    captureBudgetState,
+    resolvePage,
     thermalSnapshot,
+    MAX_ESTIMATED_RECORDS,
   };
 });

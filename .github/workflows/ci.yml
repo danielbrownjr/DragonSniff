@@ -40,4 +40,7 @@ jobs:
         run: python -m unittest discover -s tests -v
 
       - name: Run JavaScript tests
-        run: node --test tests/payload.test.cjs
+        run: |
+          node --check src/dragonsniff/web/payload.js
+          node --check src/dragonsniff/web/app.js
+          node --test tests/payload.test.cjs
