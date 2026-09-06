@@ -28,13 +28,16 @@
     </a>
     <div class="rail-connection" title="Local service"><i></i><span>Local service</span></div>
   </nav>
-  <header>
+  <header class="app-header">
     <div>
       <p class="eyebrow">Dragon-family observability</p>
       <h1 id="pageTitle">DragonSniff</h1>
       <p id="pageDescription" class="lede">Sniff out one Dragon, follow the smoke, and bag the raw evidence.</p>
     </div>
-    <div id="sessionBadge" class="badge">idle</div>
+    <div class="session-status" aria-label="Current DragonSniff mode">
+      <span>Current mode</span>
+      <div id="sessionBadge" class="badge" data-status="idle">idle</div>
+    </div>
   </header>
 
   <section id="fileWarning" class="file-warning" hidden aria-labelledby="file-warning-heading">
@@ -56,11 +59,11 @@
           <button type="submit" class="primary">Start session</button>
         </div>
       </form>
-      <div class="actions">
+      <div class="actions" aria-label="Observation session actions">
         <button id="refreshButton" type="button">Refresh JSON endpoints</button>
         <button id="reconnectButton" type="button">Reconnect event stream</button>
-        <button id="stopEventsButton" type="button">Stop event stream</button>
-        <button id="stopButton" type="button">Stop session</button>
+        <button id="stopEventsButton" class="danger" type="button">Stop event stream</button>
+        <button id="stopButton" class="danger" type="button">Stop session</button>
         <a id="exportLink" class="button-link" href="/local/v1/session/export" download>Bag evidence as JSONL</a>
       </div>
       <p id="notice" class="notice" role="status" aria-live="polite"></p>
@@ -110,9 +113,9 @@
         <p id="captureBudget" class="capture-budget" role="status" aria-live="polite">Calculating retained evidence…</p>
         <div class="actions">
           <button id="captureStartButton" type="submit" class="primary">Start passive capture</button>
-          <button id="captureStopButton" type="button" disabled>Stop capture</button>
+          <button id="captureStopButton" class="danger" type="button" disabled>Stop capture</button>
           <button id="copyCaptureSummary" type="button" class="copy-button" disabled>Copy capture summary</button>
-          <a id="captureExportLink" class="button-link" href="/local/v1/capture/export" download hidden>Download capture JSONL</a>
+          <a id="captureExportLink" class="button-link" href="/local/v1/capture/export" download hidden>Download thermal capture JSONL</a>
           <span id="captureCopyFeedback" class="copy-feedback" role="status" aria-live="polite"></span>
         </div>
       </form>
@@ -178,10 +181,10 @@
         </div>
         <div class="actions">
           <button id="churnStartButton" type="submit" class="primary">Start bounded churn</button>
-          <button id="churnStopButton" type="button" disabled>Stop churn</button>
+          <button id="churnStopButton" class="danger" type="button" disabled>Stop churn</button>
           <button id="copyChurnSummary" type="button" class="copy-button" disabled>Copy run summary</button>
           <button id="copyChurnHealth" type="button" class="copy-button" disabled>Copy latest raw health</button>
-          <a id="churnExportLink" class="button-link" href="/local/v1/churn/export" download hidden>Download churn JSONL</a>
+          <a id="churnExportLink" class="button-link" href="/local/v1/churn/export" download hidden>Download SSE churn JSONL</a>
           <span id="churnCopyFeedback" class="copy-feedback" role="status" aria-live="polite"></span>
         </div>
       </form>

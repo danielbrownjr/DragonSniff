@@ -42,7 +42,7 @@ Selecting a profile fills the ordinary configuration fields. Editing any field m
 
 ## Evidence and export
 
-The existing bounded `SessionRecorder` and a run-specific JSONL export are reused. The global session export always follows the active timeline, while **Download churn JSONL** keeps this run's evidence reachable after normal observation resumes. Raw payloads and unknown fields are not normalized away. Evidence includes:
+The existing bounded `SessionRecorder` and a run-specific JSONL export are reused. The global session export always follows the active timeline, while **Download SSE churn JSONL** provides `dragonsniff-sse-churn.jsonl` and keeps this run's evidence reachable after normal observation resumes. Raw payloads and unknown fields are not normalized away. Evidence includes:
 
 - run start, configuration, target, bounds, and run ID
 - cycle start and finish summaries
