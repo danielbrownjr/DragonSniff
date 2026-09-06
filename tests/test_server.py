@@ -61,6 +61,24 @@ class ServerTests(TestCase):
             self.assertEqual(status, 200)
             self.assertEqual(json.loads(body)["session_state"], "idle")
 
+    def test_missing_automation_exports_return_not_found(self) -> None:
+        with LocalServerFixture() as local:
+            capture_status, capture_body, _ = local.request(
+                "GET", "/local/v1/capture/export"
+            )
+            churn_status, churn_body, _ = local.request(
+                "GET", "/local/v1/churn/export"
+            )
+
+        self.assertEqual(capture_status, 404)
+        self.assertEqual(
+            json.loads(capture_body), {"error": "capture_evidence_not_available"}
+        )
+        self.assertEqual(churn_status, 404)
+        self.assertEqual(
+            json.loads(churn_body), {"error": "churn_evidence_not_available"}
+        )
+
     def test_family_ui_favicon_and_unlinked_lab_route_are_served(self) -> None:
         with LocalServerFixture() as local:
             lab_status, lab_body, lab_type = local.request("GET", "/lab")
@@ -100,9 +118,8 @@ class ServerTests(TestCase):
     def test_static_ui_explains_direct_file_use_and_exposes_copy_controls(self) -> None:
         with LocalServerFixture() as local:
             status, body, _ = local.request("GET", "/")
-            app_status, app_body, _ = local.request("GET", "/app.js")
+            app_status, _, _ = local.request("GET", "/app.js")
         html = body.decode()
-        app = app_body.decode()
         self.assertEqual(status, 200)
         self.assertEqual(app_status, 200)
         self.assertIn("DragonSniff is not a standalone HTML file", html)
@@ -366,6 +383,58 @@ class ServerTests(TestCase):
             any(record["kind"] == "capture_run_completed" for record in capture_records)
         )
 
+    def test_capture_export_survives_reconnect_and_later_churn(self) -> None:
+        with DeviceFixture() as device, LocalServerFixture() as local:
+            local.request(
+                "POST",
+                "/local/v1/capture/start",
+                {
+                    "target": device.target,
+                    "configuration": {
+                        "duration_seconds": 1,
+                        "state_interval_seconds": 0.5,
+                        "health_interval_seconds": 5,
+                    },
+                },
+            )
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                _, body, _ = local.request("GET", "/local/v1/session")
+                if json.loads(body)["capture"]["state"] == "completed":
+                    break
+                time.sleep(0.01)
+
+            first_status, first_export, _ = local.request(
+                "GET", "/local/v1/capture/export"
+            )
+            local.request(
+                "POST", "/local/v1/session/start", {"target": device.target}
+            )
+            second_status, second_export, _ = local.request(
+                "GET", "/local/v1/capture/export"
+            )
+            local.request(
+                "POST",
+                "/local/v1/churn/start",
+                {
+                    "target": device.target,
+                    "configuration": {
+                        "cycles": 1,
+                        "observe_seconds": 0.25,
+                        "max_events": 1,
+                        "delay_seconds": 0.1,
+                    },
+                },
+            )
+            third_status, third_export, _ = local.request(
+                "GET", "/local/v1/capture/export"
+            )
+
+        self.assertEqual((first_status, second_status, third_status), (200, 200, 200))
+        self.assertTrue(first_export)
+        self.assertEqual(second_export, first_export)
+        self.assertEqual(third_export, first_export)
+
     def test_cancelled_capture_also_restores_observation(self) -> None:
         with DeviceFixture({"quiet_seconds": 1.0}) as device, LocalServerFixture() as local:
             local.request("POST", "/local/v1/session/start", {"target": device.target})
@@ -503,6 +572,17 @@ class ServerTests(TestCase):
             def wait_finished(self, timeout=None):
                 return True
 
+            def snapshot(self, recent_records: int = 100):
+                return {
+                    **SessionManager.empty_capture_snapshot(),
+                    "state": "completed",
+                    "run_id": "finished-run",
+                    "recorder": self.recorder.summary(),
+                    "recent_records": [],
+                    "active_device_connections": 0,
+                    "device_connection_limit": 1,
+                }
+
         class FailingObserver:
             def __init__(self, target) -> None:
                 self.target = target
@@ -525,7 +605,25 @@ class ServerTests(TestCase):
             )
 
         self.assertIsNone(manager.current())
-        self.assertIn("synthetic resume failure", manager._resume_error or "")
+        self.assertIn(
+            "synthetic resume failure",
+            manager.snapshot()["automation_return"]["error"],
+        )
+
+    def test_start_paths_reject_after_shutdown_begins(self) -> None:
+        manager = SessionManager()
+        manager.shutdown()
+
+        attempts = (
+            lambda: manager.start("dragon.local"),
+            lambda: manager.start_capture("dragon.local", {}),
+            lambda: manager.start_churn("dragon.local", {}),
+        )
+        for attempt in attempts:
+            with self.subTest(attempt=attempt), self.assertRaisesRegex(
+                RuntimeError, "shutting down"
+            ):
+                attempt()
 
     def test_slow_automation_transition_does_not_block_session_polling(self) -> None:
         stop_entered = Event()

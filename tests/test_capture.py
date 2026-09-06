@@ -1,5 +1,6 @@
 import threading
 import time
+from types import SimpleNamespace
 from typing import Callable
 from unittest import TestCase
 
@@ -61,6 +62,12 @@ class CaptureConfigTests(TestCase):
         )
         self.assertEqual(CaptureConfig(600.0, 2.0, 30.0).profile_name(), "Custom")
 
+    def test_record_estimate_matches_browser_parity_cases(self) -> None:
+        self.assertEqual(CaptureConfig(120.0, 1.0, 10.0).estimated_records(), 280)
+        self.assertEqual(
+            CaptureConfig(43_200.0, 0.5, 5.0).estimated_records(), 190_096
+        )
+
     def test_rejects_invalid_unknown_and_record_overflow_schedules(self) -> None:
         invalid = (
             {"duration_seconds": 0},
@@ -104,6 +111,25 @@ class CaptureRunnerTests(TestCase):
     def assert_clean(self, runner: CaptureRunner) -> None:
         self.assertEqual(runner.client.budget.active, 0)
         self.assertEqual(capture_threads(), [])
+        self.assertTrue(runner.snapshot()["cleanup_complete"])
+
+    def test_finished_event_requires_terminal_state_and_released_permit(self) -> None:
+        recorder = SessionRecorder()
+        budget = SimpleNamespace(active=1, limit=1)
+        client = SimpleNamespace(recorder=recorder, budget=budget)
+        runner = CaptureRunner(
+            parse_target("dragon.local"),
+            short_config(),
+            client=client,  # type: ignore[arg-type]
+        )
+        runner._state["state"] = "running"
+
+        runner._complete("completed")
+
+        self.assertFalse(runner.wait_finished(0))
+        self.assertFalse(runner.snapshot()["cleanup_complete"])
+        budget.active = 0
+        self.assertTrue(runner.wait_finished(0))
         self.assertTrue(runner.snapshot()["cleanup_complete"])
 
     def test_capture_polls_only_fixed_json_endpoints_and_preserves_raw_evidence(self) -> None:

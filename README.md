@@ -51,7 +51,7 @@ The local service accepts only its expected `127.0.0.1` or `localhost` Host and 
 Dragon device -- HTTP API and optional SSE --> local Python service --> browser UI
 ```
 
-The runtime uses Python 3.11 or newer and only the standard library. DragonSniff intentionally bounds its own device traffic to two concurrent connections, local application requests are serialized, JSON responses are capped at 1 MiB, individual SSE events are capped at 256 KiB, and the in-memory session retains at most 2,000 records. These limits and current device-connection use are visible in the UI. The two-connection limit is DragonSniff's local resource budget; it is independent of any product's server-side SSE cap.
+The runtime uses Python 3.11 or newer and only the standard library. DragonSniff intentionally bounds its own device traffic to two concurrent connections, serves local application requests through at most eight worker threads, caps JSON responses at 1 MiB and individual SSE events at 256 KiB, and retains at most 2,000 records for normal observation. Automated captures use a separately validated recorder budget. These limits and current device-connection use are visible in the UI. The two-connection limit is DragonSniff's local resource budget; it is independent of any product's server-side SSE cap.
 
 Only these device requests exist:
 

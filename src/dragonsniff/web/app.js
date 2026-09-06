@@ -347,6 +347,7 @@ function renderChurn(snapshot) {
   document.querySelector("#churnStopButton").disabled = !running;
   document.querySelector("#copyChurnSummary").disabled = payloadTools.churnSummaryText(churn) === null;
   document.querySelector("#copyChurnHealth").disabled = payloadTools.churnHealthText(churn) === null;
+  document.querySelector("#churnExportLink").hidden = !churn.run_id;
 }
 
 function renderCapture(snapshot) {
@@ -380,6 +381,7 @@ function renderCapture(snapshot) {
   document.querySelector("#captureProfile").disabled = running || stopping;
   document.querySelector("#captureStopButton").disabled = !running;
   document.querySelector("#copyCaptureSummary").disabled = payloadTools.captureSummaryText(capture) === null;
+  document.querySelector("#captureExportLink").hidden = !capture.run_id;
   updateCaptureBudget();
 }
 
@@ -484,10 +486,6 @@ async function act(path, body = {}, statusNode = notice) {
   }
 }
 
-async function startAutomatedTest(path, body, statusNode) {
-  await act(path, body, statusNode);
-}
-
 if (window.location.protocol === "file:") {
   document.querySelector("#fileWarning").hidden = false;
   document.querySelector("main").hidden = true;
@@ -501,7 +499,7 @@ if (window.location.protocol === "file:") {
   window.addEventListener("popstate", () => activatePage(pageFromLocation()));
   window.addEventListener("hashchange", () => activatePage(pageFromLocation()));
   ["#labPollInterval", "#labOpenRaw", "#labDense"].forEach((selector) => {
-    document.querySelector(selector).addEventListener("change", applyLabOptions);
+    document.querySelector(selector).addEventListener("change", () => applyLabOptions());
   });
   document.querySelector("#connectForm").addEventListener("submit", (event) => {
     event.preventDefault();
@@ -531,7 +529,7 @@ if (window.location.protocol === "file:") {
   document.querySelector("#captureForm").addEventListener("submit", (event) => {
     event.preventDefault();
     const configuration = captureConfigurationFromForm();
-    startAutomatedTest(
+    act(
       "/local/v1/capture/start",
       {target: targetInput.value.trim(), configuration},
       captureNotice,
@@ -563,7 +561,7 @@ if (window.location.protocol === "file:") {
       max_events: Number(document.querySelector("#churnMaxEvents").value),
       delay_seconds: Number(document.querySelector("#churnDelaySeconds").value),
     };
-    startAutomatedTest(
+    act(
       "/local/v1/churn/start",
       {target: targetInput.value.trim(), configuration},
       churnNotice,

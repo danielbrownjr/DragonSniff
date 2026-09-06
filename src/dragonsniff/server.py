@@ -52,6 +52,7 @@ class SessionManager:
         self._transition_lock = Lock()
         self._shutdown = Event()
         self._automation_generation = 0
+        self._active_automation: str | None = None
         self._resume_target: DeviceTarget | None = None
         self._resume_threads: set[Thread] = set()
         self._last_automation_return: str | None = None
@@ -62,6 +63,7 @@ class SessionManager:
             return self._start_observation(target_value)
 
     def _start_observation(self, target_value: str) -> dict[str, Any]:
+        self._raise_if_shutdown()
         target = parse_target(target_value)
         with self._lock:
             previous = self._observer
@@ -79,10 +81,10 @@ class SessionManager:
             raise RuntimeError("the previous observation session is still stopping")
         observer = Observer(target)
         with self._lock:
+            self._raise_if_shutdown()
             self._automation_generation += 1
             self._observer = observer
-            self._churn = None
-            self._capture = None
+            self._active_automation = None
             self._resume_target = None
             self._last_automation_return = None
             self._resume_error = None
@@ -126,6 +128,7 @@ class SessionManager:
     def _start_churn(
         self, target_value: str, configuration: object
     ) -> dict[str, Any]:
+        self._raise_if_shutdown()
         target = parse_target(target_value)
         config = ChurnConfig.from_value(configuration)
         with self._lock:
@@ -143,11 +146,12 @@ class SessionManager:
         stopped_target = self._stop_observation_for_automation(observer)
         churn = ChurnRunner(target, config)
         with self._lock:
+            self._raise_if_shutdown()
             self._automation_generation += 1
             generation = self._automation_generation
             self._observer = None
             self._churn = churn
-            self._capture = None
+            self._active_automation = "churn"
             self._resume_target = stopped_target or self._resume_target
             self._last_automation_return = None
             self._resume_error = None
@@ -181,6 +185,7 @@ class SessionManager:
     def _start_capture(
         self, target_value: str, configuration: object
     ) -> dict[str, Any]:
+        self._raise_if_shutdown()
         target = parse_target(target_value)
         config = CaptureConfig.from_value(configuration)
         with self._lock:
@@ -198,11 +203,12 @@ class SessionManager:
         stopped_target = self._stop_observation_for_automation(observer)
         capture = CaptureRunner(target, config)
         with self._lock:
+            self._raise_if_shutdown()
             self._automation_generation += 1
             generation = self._automation_generation
             self._observer = None
-            self._churn = None
             self._capture = capture
+            self._active_automation = "capture"
             self._resume_target = stopped_target or self._resume_target
             self._last_automation_return = None
             self._resume_error = None
@@ -252,6 +258,10 @@ class SessionManager:
             self._resume_threads.add(thread)
             thread.start()
 
+    def _raise_if_shutdown(self) -> None:
+        if self._shutdown.is_set():
+            raise RuntimeError("the DragonSniff server is shutting down")
+
     def _resume_observation_after(
         self,
         kind: str,
@@ -285,6 +295,7 @@ class SessionManager:
                         LOGGER.exception("could not resume observation after %s", kind)
                         return
                     self._resume_target = None
+                    self._active_automation = None
                     self._last_automation_return = kind
                     self._resume_error = None
         finally:
@@ -296,6 +307,7 @@ class SessionManager:
         with self._transition_lock:
             with self._lock:
                 self._automation_generation += 1
+                self._active_automation = None
                 self._resume_target = None
                 observer = self._observer
                 churn = self._churn
@@ -312,7 +324,9 @@ class SessionManager:
                 thread.join(timeout=6.0)
 
     def snapshot(self) -> dict[str, Any]:
-        observer, churn, capture, _, automation_return = self._authoritative_context()
+        observer, churn, capture, active_automation, _, automation_return = (
+            self._authoritative_context()
+        )
         if observer is not None:
             result = observer.snapshot()
             result["active_mode"] = "observation"
@@ -326,9 +340,14 @@ class SessionManager:
             return result
         result = self.empty_snapshot()
         result["automation_return"] = automation_return
-        if churn is not None:
+        result["churn"] = (
+            churn.snapshot() if churn is not None else self.empty_churn_snapshot()
+        )
+        result["capture"] = (
+            capture.snapshot() if capture is not None else self.empty_capture_snapshot()
+        )
+        if active_automation == "churn" and churn is not None:
             result["active_mode"] = "churn"
-            result["churn"] = churn.snapshot()
             result["target"] = result["churn"]["target"]
             result["recorder"] = result["churn"]["recorder"]
             result["recent_records"] = result["churn"]["recent_records"]
@@ -338,10 +357,8 @@ class SessionManager:
             result["limits"]["device_connection_limit"] = result["churn"][
                 "device_connection_limit"
             ]
-            result["capture"] = self.empty_capture_snapshot()
-        elif capture is not None:
+        elif active_automation == "capture" and capture is not None:
             result["active_mode"] = "capture"
-            result["capture"] = capture.snapshot()
             result["target"] = result["capture"]["target"]
             result["recorder"] = result["capture"]["recorder"]
             result["recent_records"] = result["capture"]["recent_records"]
@@ -354,16 +371,16 @@ class SessionManager:
         return result
 
     def export_jsonl(self) -> str:
-        _, _, _, recorder, _ = self._authoritative_context()
+        _, _, _, _, recorder, _ = self._authoritative_context()
         return recorder.export_jsonl() if recorder is not None else ""
 
-    def export_churn_jsonl(self) -> str:
+    def export_churn_jsonl(self) -> str | None:
         churn = self.current_churn()
-        return churn.recorder.export_jsonl() if churn is not None else ""
+        return churn.recorder.export_jsonl() if churn is not None else None
 
-    def export_capture_jsonl(self) -> str:
+    def export_capture_jsonl(self) -> str | None:
         capture = self.current_capture()
-        return capture.recorder.export_jsonl() if capture is not None else ""
+        return capture.recorder.export_jsonl() if capture is not None else None
 
     def _authoritative_context(
         self,
@@ -371,6 +388,7 @@ class SessionManager:
         Observer | None,
         ChurnRunner | None,
         CaptureRunner | None,
+        str | None,
         SessionRecorder | None,
         dict[str, Any],
     ]:
@@ -379,19 +397,21 @@ class SessionManager:
             observer = self._observer
             churn = self._churn
             capture = self._capture
+            active_automation = self._active_automation
             recorder = (
                 observer.recorder
                 if observer is not None
                 else churn.recorder
-                if churn is not None
+                if active_automation == "churn" and churn is not None
                 else capture.recorder
-                if capture is not None
+                if active_automation == "capture" and capture is not None
                 else None
             )
             return (
                 observer,
                 churn,
                 capture,
+                active_automation,
                 recorder,
                 self._automation_return_snapshot_locked(),
             )
@@ -549,7 +569,11 @@ class DragonSniffHandler(BaseHTTPRequestHandler):
                 {"Content-Disposition": 'attachment; filename="dragonsniff-session.jsonl"'},
             )
         elif path == "/local/v1/churn/export":
-            body = self.manager.export_churn_jsonl().encode("utf-8")
+            export = self.manager.export_churn_jsonl()
+            if export is None:
+                self._send_json(404, {"error": "churn_evidence_not_available"})
+                return
+            body = export.encode("utf-8")
             self._send(
                 200,
                 body,
@@ -557,7 +581,11 @@ class DragonSniffHandler(BaseHTTPRequestHandler):
                 {"Content-Disposition": 'attachment; filename="dragonsniff-churn.jsonl"'},
             )
         elif path == "/local/v1/capture/export":
-            body = self.manager.export_capture_jsonl().encode("utf-8")
+            export = self.manager.export_capture_jsonl()
+            if export is None:
+                self._send_json(404, {"error": "capture_evidence_not_available"})
+                return
+            body = export.encode("utf-8")
             self._send(
                 200,
                 body,
@@ -706,6 +734,8 @@ class DragonSniffServer(ThreadingHTTPServer):
     """A loopback-only threaded server with bounded device work off-thread."""
 
     REQUEST_WORKER_LIMIT = 8
+    REQUEST_SLOT_TIMEOUT = 0.25
+    REQUEST_SOCKET_TIMEOUT = 5.0
 
     def __init__(self, address: tuple[str, int], manager: SessionManager | None = None) -> None:
         if address[0] not in {"127.0.0.1", "localhost", "::1"}:
@@ -715,8 +745,24 @@ class DragonSniffServer(ThreadingHTTPServer):
         super().__init__(address, DragonSniffHandler)
 
     def process_request(self, request: Any, client_address: Any) -> None:
-        self._request_slots.acquire()
+        if not self._request_slots.acquire(timeout=self.REQUEST_SLOT_TIMEOUT):
+            body = b'{"error":"server_busy"}'
+            response = (
+                b"HTTP/1.1 503 Service Unavailable\r\n"
+                b"Content-Type: application/json; charset=utf-8\r\n"
+                + f"Content-Length: {len(body)}\r\n".encode("ascii")
+                + b"Connection: close\r\n\r\n"
+                + body
+            )
+            try:
+                request.sendall(response)
+            except OSError:
+                pass
+            finally:
+                self.shutdown_request(request)
+            return
         try:
+            request.settimeout(self.REQUEST_SOCKET_TIMEOUT)
             super().process_request(request, client_address)
         except Exception:
             self._request_slots.release()

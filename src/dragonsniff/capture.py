@@ -332,7 +332,7 @@ class CaptureRunner:
         with self._lock:
             final = "cancelled" if self._cancel.is_set() else outcome
             self._state["state"] = final
-            self._state["cleanup_complete"] = self.client.budget.active == 0
+            self._state["cleanup_complete"] = False
             elapsed_ms = self._elapsed_ms()
             self._state["elapsed_ms"] = elapsed_ms
             samples_completed = self._state["samples_completed"]
@@ -346,7 +346,7 @@ class CaptureRunner:
         )
         with self._lock:
             self._state["end_timestamp"] = record["timestamp"]
-        self._finished.set()
+        self._finish_if_complete()
 
     def wait_finished(self, timeout: float | None = None) -> bool:
         """Wait until terminal evidence and local cleanup are complete."""
@@ -359,14 +359,21 @@ class CaptureRunner:
     def _finish_if_complete(self) -> bool:
         with self._lock:
             thread = self._thread
-            if thread is not None and thread.is_alive():
+            if (
+                thread is not None
+                and thread.is_alive()
+                and thread is not current_thread()
+            ):
                 return False
             if self.client.budget.active != 0:
                 return False
             if self._state["state"] == "stopping":
                 return False
             self._state["cleanup_complete"] = True
-            return self._state["state"] in self.TERMINAL_STATES
+            finished = self._state["state"] in self.TERMINAL_STATES
+            if finished:
+                self._finished.set()
+            return finished
 
     def snapshot(self, recent_records: int = 100) -> dict[str, Any]:
         self._finish_if_complete()
