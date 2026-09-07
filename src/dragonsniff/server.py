@@ -661,7 +661,19 @@ class DragonSniffHandler(BaseHTTPRequestHandler):
         elif path == "/local/v1/session":
             self._send_json(200, self.manager.snapshot())
         elif path == "/local/v1/history":
-            self._send_json(200, self.manager.history())
+            try:
+                history = self.manager.history()
+            except OSError:
+                LOGGER.exception("could not read persistent session storage")
+                self._send_json(
+                    500,
+                    {
+                        "error": "storage_unavailable",
+                        "message": "could not read persistent session storage",
+                    },
+                )
+                return
+            self._send_json(200, history)
         elif self._history_route(path, "") is not None:
             session_id = self._history_route(path, "")
             session = self.manager.historical_session(session_id)

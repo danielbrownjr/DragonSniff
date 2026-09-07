@@ -337,6 +337,35 @@ class ServerTests(TestCase):
         self.assertIn(b'"kind":"session_started"', export_body)
         self.assertIn("dragonsniff-observation-", disposition)
 
+    def test_history_storage_traversal_failure_returns_json_and_server_survives(self) -> None:
+        with TemporaryDirectory() as temporary:
+            manager = SessionManager(store=SessionStore(temporary))
+            with LocalServerFixture(manager) as local:
+                with patch.object(Path, "iterdir", side_effect=OSError("storage offline")):
+                    with self.assertLogs("dragonsniff.server", level="ERROR") as logs:
+                        status, body, content_type = local.request(
+                            "GET", "/local/v1/history"
+                        )
+                health_status, health_body, _ = local.request("GET", "/healthz")
+                history_status, history_body, _ = local.request(
+                    "GET", "/local/v1/history"
+                )
+
+        self.assertEqual(status, 500)
+        self.assertEqual(content_type, "application/json; charset=utf-8")
+        self.assertEqual(
+            json.loads(body),
+            {
+                "error": "storage_unavailable",
+                "message": "could not read persistent session storage",
+            },
+        )
+        self.assertTrue(any("storage offline" in entry for entry in logs.output))
+        self.assertEqual(health_status, 200)
+        self.assertEqual(json.loads(health_body), {"status": "ok"})
+        self.assertEqual(history_status, 200)
+        self.assertTrue(json.loads(history_body)["persistent"])
+
     def test_unknown_history_entry_returns_not_found(self) -> None:
         with TemporaryDirectory() as temporary:
             manager = SessionManager(store=SessionStore(temporary))
