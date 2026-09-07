@@ -2,6 +2,8 @@
 
 DragonSniff can run directly on a trusted LAN from its public GHCR image. This deployment is a single DragonSniff service: no Git checkout, NAS-side build, registry credential, or header-rewriting proxy is required.
 
+Explicit trusted-host support makes the former Caddy `Host`/`Origin` rewrite shim unnecessary. The direct topology has been validated on the real NAS at an external published port, and that shim has been retired.
+
 DragonSniff is an unauthenticated developer service. Use this recipe only on a trusted LAN, never port-forward it to the internet, and allow only Dragon devices you are authorized to inspect. Host validation is a browser/network backstop, not authentication. The browser is not a safety boundary; DragonSniff itself remains read-only to device APIs.
 
 ## Stack
@@ -57,4 +59,10 @@ To upgrade, pull the newest image and redeploy the stack. The named volume prese
 
 The currently published image is Linux/amd64. Confirm NAS architecture compatibility before deployment.
 
-An ordinary TLS reverse proxy may be evaluated separately when HTTPS is required. A proxy whose purpose is to rewrite LAN `Host` or `Origin` values to localhost is not part of this supported topology.
+## Validated NAS behavior
+
+The direct one-service deployment has been verified with DragonSniff published at `192.168.1.200:8766`: the configured authority was accepted, idle state showed **No current evidence**, persistent History survived replacement, and `/healthz` recovered after an intentional force-kill and restart. An already-open browser tab may briefly report `Local service error: Failed to fetch` while the process is unavailable; refresh or reconnect after `/healthz` returns.
+
+Brave still warns that a JSONL download over plain LAN HTTP may be harmful. The response MIME type, download disposition, cache policy, and `nosniff` header have been reviewed and remain defensible, so this documentation pass does not alter them.
+
+An ordinary TLS reverse proxy may still be useful when HTTPS is required. That is conceptually different from the retired proxy whose only purpose was to rewrite LAN `Host` or `Origin` values to localhost. HTTPS deployment and the remaining browser-download warning are tracked in [Issue #26](https://github.com/danielbrownjr/DragonSniff/issues/26).

@@ -38,11 +38,11 @@ The UI provides three named starting points, all within the same existing hard b
 - **Extended:** 10 cycles, 5 seconds per cycle, 5 application events, 0.25-second delay.
 - **Stress:** 20 cycles, 10 seconds per cycle, 10 application events, 0.1-second delay.
 
-Selecting a profile fills the ordinary configuration fields. Editing any field makes the run Custom; it does not bypass server-side bounds. For before/after evidence, run Baseline, Extended, and Stress against DragonBreath 1.1.14, retain the JSONL files, then repeat the same sequence against the PID build. Compare connection, cleanup, health, heap, uptime, and boot-ID observations. This workflow does not assess PID tuning or thermal behavior.
+Selecting a profile fills the ordinary configuration fields. Editing any field makes the run Custom; it does not bypass server-side bounds. For before/after evidence, run the same named profiles against the baseline and candidate firmware, retain each JSONL file, and compare connection, cleanup, health, heap, uptime, and boot-ID observations. This workflow does not assess controller tuning or thermal behavior.
 
 ## Evidence and export
 
-The existing bounded `SessionRecorder` and a run-specific JSONL export are reused. The global session export always follows the active timeline, while **Download SSE churn JSONL** provides `dragonsniff-sse-churn.jsonl` and keeps this run's evidence reachable after normal observation resumes. Raw payloads and unknown fields are not normalized away. Evidence includes:
+The existing bounded `SessionRecorder` and a run-specific JSONL export are reused. The global session export follows the active timeline once its authoritative recorder contains evidence, while **Download SSE churn JSONL** provides `dragonsniff-sse-churn.jsonl` and keeps this run's evidence reachable after normal observation resumes. Raw payloads and unknown fields are not normalized away. Evidence includes:
 
 - run start, configuration, target, bounds, and run ID
 - cycle start and finish summaries

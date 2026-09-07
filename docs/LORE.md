@@ -254,6 +254,53 @@ was the whole point.
 
 ---
 
+### The Unmasking at the NAS Gate
+
+At last the named gate was carried
+to the actual NAS,
+not a diagram of a NAS,
+not a confident paragraph about a NAS,
+but the humming box itself.
+
+The trusted host approached
+and spoke its own name.
+
+The gate listened.
+The gate agreed.
+No localhost disguise was required.
+
+So Caddy removed the false moustache,
+folded it with what dignity remained,
+and departed from the header-rewriting trade.
+
+The browser entered by the published port.
+The container remembered its History.
+An empty present offered no counterfeit evidence.
+
+Then, for science,
+the keepers slew the process.
+
+For a moment the browser cried that fetch had failed,
+which was both alarming and entirely accurate.
+
+The container rose again.
+`/healthz` answered.
+The archive remained.
+
+Brave, meanwhile,
+continued clutching its pearls
+at JSONL crossing the plain-HTTP road.
+
+Thus one prophecy was fulfilled:
+the proxy was gone,
+and the trusted host spoke plainly.
+
+The remaining road points toward HTTPS
+and whatever ceremony convinces a browser
+that evidence is evidence.
+
+---
+
 ### The Rule of the Bards
 
 The Chronicle is amended only when the dragon gains a new power,
@@ -278,8 +325,8 @@ When normal DragonSniff work crosses this threshold, the lore update should ride
 
 ### A small prophecy
 
-One day the proxy will be gone.
-One day the trusted host will speak its own name.
+The proxy is gone.
+The trusted host speaks its own name.
 One day evidence will cross a clean encrypted road
 without the browser clutching its pearls.
 

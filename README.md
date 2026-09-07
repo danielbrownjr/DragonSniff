@@ -68,11 +68,13 @@ The same values may be supplied as `DRAGONSNIFF_BIND`, `DRAGONSNIFF_PORT`, and `
 dragonsniff --data-dir ./dragonsniff-data --allow-target dragonbreath.local --require-allowlist
 ```
 
-Every observation, Thermal capture, and Churn run is then appended to its own JSONL file as records arrive. Each complete JSONL record is flushed before it becomes visible in the live view. Metadata is cached and checkpointed every 64 records, then flushed synchronously on terminal transitions. After an ungraceful stop, startup discards and quarantines only an incomplete final JSONL record, derives authoritative counters from the evidence stream, and marks a previously active session as `interrupted`; it never silently resumes device work. A known persistence failure is instead recorded as `failed` when the metadata filesystem still permits that terminal write. Storage defaults to at most 500 sessions and 256 MiB, with oldest finished sessions removed first. Active and currently downloading sessions are never removed by retention. Valid-session storage totals use cached actual file sizes updated after durable writes, plus any recovered partial evidence; one `fstat()` after the existing per-record `fsync()` keeps active-session accounting exact, and measured end-to-end History and retention paths remain substantially faster. New Windows evidence files use binary descriptors, while startup recognizes the exact size of legacy CRLF evidence. Canonically named session directories with corrupt, unreadable, or unsupported metadata stay out of normal History results but remain included in storage totals and retention through filesystem sizing; warnings identify them, and their directory modification time is used only as a fallback for oldest-first removal. If the top-level session storage cannot be traversed, History returns a controlled JSON error instead of an empty result or a dropped connection.
+Every observation, Thermal capture, and Churn run is then appended to its own JSONL file as records arrive. Complete records are flushed before the live view reports them. After an ungraceful stop, startup quarantines only an incomplete final JSONL record, derives authoritative counters from the retained evidence, marks a previously active session as `interrupted`, and never resumes device work automatically.
 
-History status distinguishes how a run ended: `completed` reached its normal boundary, `cancelled` received an orderly stop, `interrupted` was recovered after the process disappeared without a terminal transition, and `failed` records a known operational or persistence error. Recovery preserves every complete JSONL record—including a final request with no response—and never invents or deletes evidence to make a timeline appear complete.
+History distinguishes how a run ended: `completed` reached its normal boundary, `cancelled` received an orderly stop, `interrupted` was recovered after the process disappeared without a terminal transition, and `failed` records a known operational or persistence error. Recovery preserves every complete JSONL record—including a final request with no response—and never invents a response.
 
-Use `--retention-sessions` and `--retention-bytes` to change those bounds. `DRAGONSNIFF_DATA_DIR`, `DRAGONSNIFF_ALLOWED_TARGETS`, `DRAGONSNIFF_ALLOWED_HOSTS`, `DRAGONSNIFF_REQUIRE_ALLOWLIST`, `DRAGONSNIFF_RETENTION_SESSIONS`, and `DRAGONSNIFF_RETENTION_BYTES` provide the equivalent environment configuration. Comma-separate multiple environment allowlist entries. `--allow-host` may be repeated to add exact browser authorities; loopback on the listening port remains accepted by default.
+Storage defaults to 500 sessions and 256 MiB, with oldest finished sessions removed first. Active and currently downloading sessions are protected from retention. Use `--retention-sessions` and `--retention-bytes` to change those bounds. See the [server and container status](docs/server-docker-roadmap.md) for the detailed persistence and recovery contract.
+
+`DRAGONSNIFF_DATA_DIR`, `DRAGONSNIFF_ALLOWED_TARGETS`, `DRAGONSNIFF_ALLOWED_HOSTS`, `DRAGONSNIFF_REQUIRE_ALLOWLIST`, `DRAGONSNIFF_RETENTION_SESSIONS`, and `DRAGONSNIFF_RETENTION_BYTES` provide environment equivalents. Comma-separate multiple environment allowlist entries. `--allow-host` may be repeated to add exact browser authorities; loopback on the listening port remains accepted by default.
 
 `GET /healthz` reports whether the local web service is responsive and does not require device connectivity.
 
@@ -106,7 +108,7 @@ Use `docker compose down` to remove the container while retaining the named volu
 
 Main-branch images are published publicly as `ghcr.io/danielbrownjr/dragonsniff:latest` and as an immutable `sha-<full-commit-sha>` tag. `latest` is convenient for routine upgrades; the SHA tag gives a reproducible deployment and rollback point. Portainer should use `image:`, not a remote `build:` context, so neither Git nor a local image build is required on the NAS.
 
-See the [direct trusted-LAN Portainer recipe](docs/portainer.md) for a hardened one-service stack with persistent evidence. It supports a configurable external host port and does not require a proxy to rewrite `Host` or `Origin` headers. The package is public, so do not configure a Portainer registry token solely to pull DragonSniff.
+See the [direct trusted-LAN Portainer recipe](docs/portainer.md) for the hardware-validated one-service stack with persistent evidence. The real NAS now publishes DragonSniff directly with its configured authority; the former Caddy header-rewrite workaround has been retired. The package is public, so do not configure a Portainer registry token solely to pull DragonSniff.
 
 ## Concepts
 
@@ -133,7 +135,7 @@ The active-run downloads remain available. With persistent storage enabled, **Hi
 - [Dragon API findings](docs/dragon-api-findings.md)
 - [Hardware validation](docs/hardware-validation.md)
 - [Portainer trusted-LAN deployment](docs/portainer.md)
-- [Server and Docker roadmap](docs/server-docker-roadmap.md)
+- [Server and container status](docs/server-docker-roadmap.md)
 
 ## Development
 
@@ -155,11 +157,11 @@ python -m unittest discover -s tests -v
 
 ## Status and boundaries
 
-DragonSniff is developer tooling at version 0.2.0. Live observation, bounded SSE churn, passive thermal capture, durable JSONL evidence, restart recovery, bounded retention, and a host-local Docker deployment are implemented. Authentication and remote multi-user operation are not.
+DragonSniff is developer tooling at version 0.2.0. Live observation, bounded SSE churn, passive thermal capture, durable JSONL evidence, restart recovery, bounded retention, local Docker Compose, and direct trusted-LAN Portainer deployment are implemented and validated. Authentication, HTTPS, and public or untrusted-network operation are not.
 
 The tool does not provide actuator controls, settings editing, PID tuning, OTA, provisioning, cloud telemetry, or safety policy. Device firmware remains responsible for authentication, validation, interlocks, and safe behavior.
 
-See [Issue #7](https://github.com/danielbrownjr/DragonSniff/issues/7) for the persistent Docker-daemon milestone.
+HTTPS deployment and the remaining Brave download warning are tracked in [Issue #26](https://github.com/danielbrownjr/DragonSniff/issues/26). Current and deferred container work is summarized in the [server and container status](docs/server-docker-roadmap.md).
 
 > **Is this scope creep? Yes. Anyway.**
 

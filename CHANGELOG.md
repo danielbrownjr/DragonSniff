@@ -4,9 +4,9 @@
 
 ### Added
 
-- Explicit bind, port, and log-level configuration for future headless/container use.
+- Explicit bind, port, and log-level configuration for headless/container use.
 - A hardware-independent `/healthz` service-liveness endpoint.
-- A versioned server and Docker readiness roadmap.
+- A versioned server/container status and remaining-work reference.
 - Distinct filenames for active-session, Thermal-capture, and SSE-churn exports.
 - Dragon-family navigation with separate Dashboard, Thermal, Churn, and Evidence surfaces plus the unlinked `/lab` display controls.
 - Automatic pause and restoration of live observation around completed, cancelled, or failed automated runs.
@@ -17,6 +17,10 @@
 - Read-only session history API, UI, and purpose-specific historical JSONL downloads.
 - Exact normalized target allowlisting for unattended service operation.
 - A non-root Docker image and host-loopback Compose deployment with persistent storage and health checks.
+- Exact trusted browser authorities for direct trusted-LAN deployment without rewriting `Host` or `Origin` headers.
+- Public GHCR images tagged as `latest` and immutable full commit SHAs.
+- A direct, hardened Portainer deployment guide using the published image.
+- GitHub funding metadata for the project's Ko-fi page.
 
 ### Fixed
 
@@ -27,6 +31,8 @@
 - Retain the latest capture and churn evidence independently across later observation sessions and automated runs; unavailable run exports now return 404 instead of a zero-byte evidence file.
 - Validate hash routes against owned page names, scope expert polling preferences to `/lab`, and use valid current-page navigation semantics.
 - Stream historical downloads from a fixed initial file length instead of allocating the complete evidence file in memory.
+- Return `404 session_evidence_not_available` instead of a zero-byte current-session download when no current evidence exists.
+- Preserve every complete record, including a final unmatched request, when startup classifies an unfinished run as `interrupted`.
 
 ### Validation
 
