@@ -1,6 +1,8 @@
 from http.client import HTTPConnection
 import json
+from pathlib import Path
 import re
+from tempfile import TemporaryDirectory
 from threading import Event, Thread
 import time
 from unittest import TestCase
@@ -8,7 +10,8 @@ from unittest.mock import patch
 
 from dragonsniff.capture import CaptureConfig
 from dragonsniff.recording import SessionRecorder
-from dragonsniff.server import DragonSniffServer, SessionManager
+from dragonsniff.server import DragonSniffHandler, DragonSniffServer, SessionManager
+from dragonsniff.storage import SessionStore
 from dragonsniff.target import parse_target
 
 from tests.test_client import DeviceFixture
@@ -210,6 +213,8 @@ class ServerTests(TestCase):
         self.assertIn('id="pidGaugeNeedle"', html)
         self.assertIn('data-page="thermal"', html)
         self.assertIn('data-page="churn"', html)
+        self.assertIn('data-page="history"', html)
+        self.assertIn('id="historyRows"', html)
         self.assertIn('href="favicon.svg"', html)
         self.assertIn('id="labPollInterval"', html)
         self.assertIn("Start bounded churn", html)
@@ -284,6 +289,122 @@ class ServerTests(TestCase):
             self.assertEqual(json.loads(body)["error"], "invalid_request")
             _, body, _ = local.request("GET", "/local/v1/session")
             self.assertEqual(json.loads(body)["session_state"], "idle")
+
+    def test_configured_target_allowlist_rejects_other_valid_targets(self) -> None:
+        manager = SessionManager(allowed_targets=["allowed.local"])
+        with LocalServerFixture(manager) as local:
+            status, body, _ = local.request(
+                "POST", "/local/v1/session/start", {"target": "other.local"}
+            )
+        self.assertEqual(status, 400)
+        self.assertIn("allowlist", json.loads(body)["message"])
+
+    def test_persistent_history_lists_and_downloads_completed_session(self) -> None:
+        with TemporaryDirectory() as temporary, DeviceFixture() as device:
+            manager = SessionManager(
+                store=SessionStore(temporary), allowed_targets=[device.target]
+            )
+            with LocalServerFixture(manager) as local:
+                start_status, start_body, _ = local.request(
+                    "POST", "/local/v1/session/start", {"target": device.target}
+                )
+                session_id = json.loads(start_body)["recorder"]["persistent_session_id"]
+                stop_status, _, _ = local.request(
+                    "POST", "/local/v1/session/stop", {}
+                )
+                history_status, history_body, _ = local.request(
+                    "GET", "/local/v1/history"
+                )
+                detail_status, detail_body, _ = local.request(
+                    "GET", f"/local/v1/history/{session_id}"
+                )
+                export_status, export_body, disposition = local.download(
+                    f"/local/v1/history/{session_id}/export"
+                )
+
+        self.assertEqual((start_status, stop_status), (202, 200))
+        self.assertEqual(history_status, 200)
+        history = json.loads(history_body)
+        self.assertTrue(history["persistent"])
+        self.assertEqual(history["sessions"][0]["session_id"], session_id)
+        self.assertEqual(detail_status, 200)
+        self.assertEqual(json.loads(detail_body)["status"], "completed")
+        self.assertEqual(export_status, 200)
+        self.assertIn(b'"kind":"session_started"', export_body)
+        self.assertIn("dragonsniff-observation-", disposition)
+
+    def test_unknown_history_entry_returns_not_found(self) -> None:
+        with TemporaryDirectory() as temporary:
+            manager = SessionManager(store=SessionStore(temporary))
+            with LocalServerFixture(manager) as local:
+                detail_status, detail_body, _ = local.request(
+                    "GET", f"/local/v1/history/{'0' * 32}"
+                )
+                export_status, export_body, _ = local.request(
+                    "GET", f"/local/v1/history/{'0' * 32}/export"
+                )
+        self.assertEqual(detail_status, 404)
+        self.assertEqual(json.loads(detail_body)["error"], "session_not_found")
+        self.assertEqual(export_status, 404)
+        self.assertEqual(json.loads(export_body)["error"], "session_not_found")
+
+    def test_history_routes_reject_unicode_lookalike_session_ids(self) -> None:
+        invalid = ("ａ" * 32, "０" * 32, "a" * 31 + "é", "A" * 32)
+        for session_id in invalid:
+            with self.subTest(session_id=session_id):
+                self.assertIsNone(
+                    DragonSniffHandler._history_route(
+                        f"/local/v1/history/{session_id}", ""
+                    )
+                )
+
+    def test_persistent_export_sanitizes_untrusted_metadata_from_header(self) -> None:
+        with TemporaryDirectory() as temporary:
+            store = SessionStore(temporary)
+            recorder = store.create_recorder("capture", "http://dragon.local", 10)
+            recorder.append("capture_run_completed")
+            metadata_path = (
+                Path(temporary) / "sessions" / recorder.session_id / "metadata.json"
+            )
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata["created_at"] = "2026-09-07\r\nX-Injected: yes"
+            metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+            manager = SessionManager(store=SessionStore(temporary))
+            with LocalServerFixture(manager) as local:
+                status, _, disposition = local.download(
+                    f"/local/v1/history/{recorder.session_id}/export"
+                )
+
+        self.assertEqual(status, 200)
+        self.assertNotIn("\r", disposition)
+        self.assertNotIn("\n", disposition)
+        self.assertNotIn("X-Injected:", disposition)
+        self.assertRegex(
+            disposition,
+            r'^attachment; filename="[A-Za-z0-9._-]+"$',
+        )
+
+    def test_persistent_export_rejects_untrusted_session_kind(self) -> None:
+        with TemporaryDirectory() as temporary:
+            store = SessionStore(temporary)
+            recorder = store.create_recorder("capture", "http://dragon.local", 10)
+            recorder.append("capture_run_completed")
+            metadata_path = (
+                Path(temporary) / "sessions" / recorder.session_id / "metadata.json"
+            )
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata["kind"] = "capture\r\nX-Injected: yes"
+            metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+            manager = SessionManager(store=SessionStore(temporary))
+            with LocalServerFixture(manager) as local:
+                status, body, _ = local.download(
+                    f"/local/v1/history/{recorder.session_id}/export"
+                )
+
+        self.assertEqual(status, 404)
+        self.assertEqual(json.loads(body)["error"], "session_not_found")
 
     def test_unexpected_host_is_rejected(self) -> None:
         with LocalServerFixture() as local:
@@ -643,6 +764,32 @@ class ServerTests(TestCase):
 
         observer_type.assert_not_called()
         self.assertFalse(any(thread.is_alive() for thread in manager._resume_threads))
+
+    def test_shutdown_uses_one_shared_deadline_for_all_workers(self) -> None:
+        timeouts: list[float] = []
+
+        class PendingComponent:
+            def stop(self, timeout=2.0):
+                timeouts.append(timeout)
+                return False
+
+        class PendingWatcher:
+            def join(self, timeout=None):
+                timeouts.append(timeout)
+
+        manager = SessionManager()
+        manager._observer = PendingComponent()  # type: ignore[assignment]
+        manager._churn = PendingComponent()  # type: ignore[assignment]
+        manager._capture = PendingComponent()  # type: ignore[assignment]
+        manager._resume_threads.add(PendingWatcher())  # type: ignore[arg-type]
+
+        with patch(
+            "dragonsniff.server.time.monotonic",
+            side_effect=(0.0, 0.0, 5.0, 10.0, 12.0),
+        ):
+            manager.shutdown()
+
+        self.assertEqual(timeouts, [12.0, 7.0, 2.0, 0.0])
 
     def test_resume_start_failure_is_reported_without_installing_broken_observer(self) -> None:
         class FinishedRunner:

@@ -341,6 +341,12 @@ pre {
 .timeline li { border-left: 2px solid var(--primary); padding-left: 12px; }
 .timeline-heading { display: flex; justify-content: space-between; gap: 16px; color: var(--muted-foreground); font-size: .72rem; }
 .timeline pre { max-height: 160px; margin-top: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.history-scroll { overflow-x: auto; margin-top: 12px; }
+.history-table { width: 100%; border-collapse: collapse; font-size: .78rem; }
+.history-table th, .history-table td { padding: 9px 10px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
+.history-table th { color: var(--muted-foreground); font-size: .68rem; letter-spacing: .07em; text-transform: uppercase; }
+.history-table td:nth-child(3) { max-width: 280px; overflow: hidden; text-overflow: ellipsis; }
+.history-table [data-status="interrupted"] { color: var(--warn); }
 footer { padding: 24px 0 42px; color: var(--muted-foreground); text-align: center; font-size: .76rem; }
 
 .lab-intro { border-left: 4px solid var(--primary); }

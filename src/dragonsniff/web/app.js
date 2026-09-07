@@ -10,11 +10,13 @@ let currentSnapshot = null;
 let churnProfiles = {};
 let captureProfiles = {};
 let updateTimer = null;
+let historyRequestInFlight = false;
 
 const pageCopy = {
   dashboard: ["DragonSniff", "Sniff out one Dragon, follow the smoke, and bag the raw evidence."],
   thermal: ["Thermal capture", "Run bounded state and health sampling with live chamber, target, PTC, and PID telemetry."],
   churn: ["Churn stress", "Exercise repeated SSE connection lifecycles and verify that the device settles cleanly."],
+  history: ["Session history", "Review and download durable evidence from completed or interrupted runs."],
   evidence: ["Evidence", "Inspect the exact parsed and raw observations retained by this local session."],
   lab: ["Super Secret Squirrel Laboratory", "Expert display controls and the complete raw evidence surface."],
 };
@@ -39,6 +41,7 @@ function activatePage(page) {
   document.title = selected === "dashboard"
     ? "DragonSniff"
     : `${pageCopy[selected][0]} · DragonSniff`;
+  if (selected === "history" && window.location.protocol !== "file:") updateHistory();
 }
 
 function navigateToPage(page) {
@@ -304,6 +307,64 @@ function renderTimeline(records) {
   });
 }
 
+function renderHistory(sessions) {
+  const rows = document.querySelector("#historyRows");
+  rows.replaceChildren();
+  if (!sessions.length) {
+    const row = document.createElement("tr");
+    const cell = document.createElement("td");
+    cell.colSpan = 6;
+    cell.textContent = "No persistent sessions have been recorded.";
+    row.append(cell);
+    rows.append(row);
+    return;
+  }
+  sessions.forEach((session) => {
+    const row = document.createElement("tr");
+    const values = [
+      new Date(session.created_at).toLocaleString(),
+      session.kind,
+      session.target,
+      session.status,
+      session.records,
+    ];
+    values.forEach((value, index) => {
+      const cell = document.createElement("td");
+      cell.textContent = String(value);
+      if (index === 3) cell.dataset.status = session.status;
+      row.append(cell);
+    });
+    const action = document.createElement("td");
+    const link = document.createElement("a");
+    link.className = "button-link";
+    link.href = `/local/v1/history/${session.session_id}/export`;
+    link.textContent = "Download JSONL";
+    link.setAttribute("download", "");
+    action.append(link);
+    row.append(action);
+    rows.append(row);
+  });
+}
+
+async function updateHistory() {
+  if (historyRequestInFlight) return;
+  historyRequestInFlight = true;
+  const historyNotice = document.querySelector("#historyNotice");
+  try {
+    const result = await localRequest("/local/v1/history");
+    renderHistory(Array.isArray(result.sessions) ? result.sessions : []);
+    showNotice(
+      historyNotice,
+      result.persistent ? "" : "Persistent storage is not configured for this DragonSniff service.",
+      result.persistent ? "available" : "idle",
+    );
+  } catch (error) {
+    showNotice(historyNotice, `Could not load session history: ${error.message}`, "error");
+  } finally {
+    historyRequestInFlight = false;
+  }
+}
+
 function renderChurn(snapshot) {
   const churn = snapshot.churn || {};
   syncChurnProfiles(churn.profiles, churn.profile, churn.configuration);
@@ -507,6 +568,7 @@ if (window.location.protocol === "file:") {
   });
   window.addEventListener("popstate", () => activatePage(pageFromLocation()));
   window.addEventListener("hashchange", () => activatePage(pageFromLocation()));
+  document.querySelector("#historyRefreshButton").addEventListener("click", updateHistory);
   ["#labPollInterval", "#labOpenRaw", "#labDense"].forEach((selector) => {
     document.querySelector(selector).addEventListener("change", () => applyLabOptions());
   });

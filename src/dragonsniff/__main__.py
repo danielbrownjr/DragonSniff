@@ -9,7 +9,12 @@ import signal
 from threading import Event, Thread
 from types import FrameType
 
-from .server import DragonSniffServer
+from .server import DragonSniffServer, SessionManager
+from .storage import (
+    DEFAULT_RETENTION_BYTES,
+    DEFAULT_RETENTION_SESSIONS,
+    SessionStore,
+)
 from .target import TargetValidationError
 
 
@@ -26,6 +31,24 @@ def _port(value: str) -> int:
     if not 1 <= port <= 65535:
         raise argparse.ArgumentTypeError("port must be between 1 and 65535")
     return port
+
+
+def _positive_int(value: str) -> int:
+    try:
+        result = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("value must be an integer") from exc
+    if result < 1:
+        raise argparse.ArgumentTypeError("value must be positive")
+    return result
+
+
+def _environment_targets() -> list[str]:
+    return [
+        value.strip()
+        for value in os.environ.get("DRAGONSNIFF_ALLOWED_TARGETS", "").split(",")
+        if value.strip()
+    ]
 
 
 def parser() -> argparse.ArgumentParser:
@@ -51,6 +74,40 @@ def parser() -> argparse.ArgumentParser:
         choices=LOG_LEVELS,
         default=os.environ.get("DRAGONSNIFF_LOG_LEVEL", "INFO").upper(),
         help="service log level (default: INFO)",
+    )
+    value.add_argument(
+        "--data-dir",
+        default=os.environ.get("DRAGONSNIFF_DATA_DIR"),
+        help="persist session evidence under this directory",
+    )
+    value.add_argument(
+        "--retention-bytes",
+        type=_positive_int,
+        default=os.environ.get(
+            "DRAGONSNIFF_RETENTION_BYTES", str(DEFAULT_RETENTION_BYTES)
+        ),
+        help="maximum retained session storage (default: 256 MiB)",
+    )
+    value.add_argument(
+        "--retention-sessions",
+        type=_positive_int,
+        default=os.environ.get(
+            "DRAGONSNIFF_RETENTION_SESSIONS", str(DEFAULT_RETENTION_SESSIONS)
+        ),
+        help="maximum retained session count (default: 500)",
+    )
+    value.add_argument(
+        "--allow-target",
+        action="append",
+        default=_environment_targets(),
+        help="permitted Dragon target; may be repeated",
+    )
+    value.add_argument(
+        "--require-allowlist",
+        action="store_true",
+        default=os.environ.get("DRAGONSNIFF_REQUIRE_ALLOWLIST", "").lower()
+        in {"1", "true", "yes"},
+        help="refuse startup unless at least one target is explicitly allowed",
     )
     return value
 
@@ -85,8 +142,21 @@ def main() -> int:
         level=getattr(logging, args.log_level),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    if args.require_allowlist and not args.allow_target:
+        raise SystemExit("at least one --allow-target is required")
+    store = (
+        SessionStore(
+            args.data_dir,
+            retention_bytes=args.retention_bytes,
+            retention_sessions=args.retention_sessions,
+        )
+        if args.data_dir
+        else None
+    )
+    manager = SessionManager(store=store, allowed_targets=args.allow_target)
     server = DragonSniffServer(
         (args.bind, args.port),
+        manager,
         allow_wildcard_bind=args.bind == "0.0.0.0",
     )
     if args.target:

@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 import json
 import logging
+import os
 from threading import BoundedSemaphore, Event, Lock, Thread, current_thread
-from typing import Any
+import time
+from typing import Any, BinaryIO, ContextManager, Iterable
 from urllib.parse import urlsplit
 
 from .capture import CaptureConfig, CaptureRunner
 from .churn import ChurnConfig, ChurnRunner
 from .observer import Observer
 from .recording import SessionRecorder
+from .storage import SessionStore, export_filename, is_valid_session_id
 from .target import DeviceTarget, TargetValidationError, parse_target
 
 
@@ -49,7 +53,14 @@ EXPORT_FILENAMES = {
 
 
 class SessionManager:
-    def __init__(self) -> None:
+    SHUTDOWN_TIMEOUT_SECONDS = 12.0
+
+    def __init__(
+        self,
+        *,
+        store: SessionStore | None = None,
+        allowed_targets: Iterable[str] = (),
+    ) -> None:
         self._observer: Observer | None = None
         self._churn: ChurnRunner | None = None
         self._capture: CaptureRunner | None = None
@@ -62,6 +73,10 @@ class SessionManager:
         self._resume_threads: set[Thread] = set()
         self._last_automation_return: str | None = None
         self._resume_error: str | None = None
+        self._store = store
+        self._allowed_targets = frozenset(
+            parse_target(value).base_url for value in allowed_targets
+        )
 
     def start(self, target_value: str) -> dict[str, Any]:
         with self._transition_lock:
@@ -70,6 +85,7 @@ class SessionManager:
     def _start_observation(self, target_value: str) -> dict[str, Any]:
         self._raise_if_shutdown()
         target = parse_target(target_value)
+        self._validate_target(target)
         with self._lock:
             previous = self._observer
             churn = self._churn
@@ -84,16 +100,20 @@ class SessionManager:
             raise RuntimeError("a capture run is active; stop it before normal observation")
         if previous is not None and not previous.stop():
             raise RuntimeError("the previous observation session is still stopping")
-        observer = Observer(target)
+        observer = self._new_observer(target)
         with self._lock:
             self._raise_if_shutdown()
+            try:
+                observer.start()
+            except Exception as exc:
+                self._fail_session_start(observer.recorder, exc)
+                raise
             self._automation_generation += 1
             self._observer = observer
             self._active_automation = None
             self._resume_target = None
             self._last_automation_return = None
             self._resume_error = None
-            observer.start()
         return observer.snapshot()
 
     def stop(self) -> tuple[bool, dict[str, Any]]:
@@ -135,6 +155,7 @@ class SessionManager:
     ) -> dict[str, Any]:
         self._raise_if_shutdown()
         target = parse_target(target_value)
+        self._validate_target(target)
         config = ChurnConfig.from_value(configuration)
         with self._lock:
             observer = self._observer
@@ -149,9 +170,14 @@ class SessionManager:
         if capture is not None and capture.snapshot()["state"] in {"running", "stopping"}:
             raise RuntimeError("a capture run is active; stop it before starting churn")
         stopped_target = self._stop_observation_for_automation(observer)
-        churn = ChurnRunner(target, config)
+        churn = self._new_churn(target, config)
         with self._lock:
             self._raise_if_shutdown()
+            try:
+                churn.start()
+            except Exception as exc:
+                self._fail_session_start(churn.recorder, exc)
+                raise
             self._automation_generation += 1
             generation = self._automation_generation
             self._observer = None
@@ -160,7 +186,6 @@ class SessionManager:
             self._resume_target = stopped_target or self._resume_target
             self._last_automation_return = None
             self._resume_error = None
-            churn.start()
             should_resume = self._resume_target is not None
         if should_resume:
             self._watch_and_resume("churn", churn, generation)
@@ -192,6 +217,7 @@ class SessionManager:
     ) -> dict[str, Any]:
         self._raise_if_shutdown()
         target = parse_target(target_value)
+        self._validate_target(target)
         config = CaptureConfig.from_value(configuration)
         with self._lock:
             observer = self._observer
@@ -206,9 +232,14 @@ class SessionManager:
         if previous is not None and previous.snapshot()["state"] in {"running", "stopping"}:
             raise RuntimeError("a capture run is already active")
         stopped_target = self._stop_observation_for_automation(observer)
-        capture = CaptureRunner(target, config)
+        capture = self._new_capture(target, config)
         with self._lock:
             self._raise_if_shutdown()
+            try:
+                capture.start()
+            except Exception as exc:
+                self._fail_session_start(capture.recorder, exc)
+                raise
             self._automation_generation += 1
             generation = self._automation_generation
             self._observer = None
@@ -217,7 +248,6 @@ class SessionManager:
             self._resume_target = stopped_target or self._resume_target
             self._last_automation_return = None
             self._resume_error = None
-            capture.start()
             should_resume = self._resume_target is not None
         if should_resume:
             self._watch_and_resume("capture", capture, generation)
@@ -288,17 +318,17 @@ class SessionManager:
                         or target is None
                     ):
                         return
-                    observer = Observer(target)
-                    self._observer = observer
+                    observer = self._new_observer(target)
                     try:
                         # Starting under the manager lock makes observer installation and
                         # worker launch atomic with respect to shutdown().
                         observer.start()
                     except Exception as exc:
-                        self._observer = None
+                        self._fail_session_start(observer.recorder, exc)
                         self._resume_error = f"{type(exc).__name__}: {exc}"
                         LOGGER.exception("could not resume observation after %s", kind)
                         return
+                    self._observer = observer
                     self._resume_target = None
                     self._active_automation = None
                     self._last_automation_return = kind
@@ -309,6 +339,7 @@ class SessionManager:
 
     def shutdown(self) -> None:
         self._shutdown.set()
+        deadline = time.monotonic() + self.SHUTDOWN_TIMEOUT_SECONDS
         with self._transition_lock:
             with self._lock:
                 self._automation_generation += 1
@@ -319,14 +350,14 @@ class SessionManager:
                 capture = self._capture
                 resume_threads = tuple(self._resume_threads)
             if observer is not None:
-                observer.stop(timeout=6.0)
+                observer.stop(timeout=max(0.0, deadline - time.monotonic()))
             if churn is not None:
-                churn.stop(timeout=6.0)
+                churn.stop(timeout=max(0.0, deadline - time.monotonic()))
             if capture is not None:
-                capture.stop(timeout=6.0)
+                capture.stop(timeout=max(0.0, deadline - time.monotonic()))
         for thread in resume_threads:
             if thread is not current_thread():
-                thread.join(timeout=6.0)
+                thread.join(timeout=max(0.0, deadline - time.monotonic()))
 
     def snapshot(self) -> dict[str, Any]:
         observer, churn, capture, active_automation, _, automation_return = (
@@ -386,6 +417,65 @@ class SessionManager:
     def export_capture_jsonl(self) -> str | None:
         capture = self.current_capture()
         return capture.recorder.export_jsonl() if capture is not None else None
+
+    def history(self) -> dict[str, Any]:
+        return {
+            "persistent": self._store is not None,
+            "sessions": self._store.list_sessions() if self._store is not None else [],
+        }
+
+    def historical_session(self, session_id: str) -> dict[str, Any] | None:
+        return self._store.get_session(session_id) if self._store is not None else None
+
+    def lease_historical_evidence(
+        self, session_id: str
+    ) -> ContextManager[BinaryIO | None]:
+        if self._store is None:
+            return nullcontext(None)
+        return self._store.lease_evidence(session_id)
+
+    def _validate_target(self, target: DeviceTarget) -> None:
+        if self._allowed_targets and target.base_url not in self._allowed_targets:
+            raise TargetValidationError("target is not in the configured allowlist")
+
+    def _new_observer(self, target: DeviceTarget) -> Observer:
+        if self._store is None:
+            return Observer(target)
+        return Observer(
+            target,
+            recorder=self._store.create_recorder(
+                "observation", target.base_url, 2_000
+            ),
+        )
+
+    def _new_churn(self, target: DeviceTarget, config: ChurnConfig) -> ChurnRunner:
+        if self._store is None:
+            return ChurnRunner(target, config)
+        return ChurnRunner(
+            target,
+            config,
+            recorder=self._store.create_recorder("churn", target.base_url, 2_000),
+        )
+
+    def _new_capture(
+        self, target: DeviceTarget, config: CaptureConfig
+    ) -> CaptureRunner:
+        if self._store is None:
+            return CaptureRunner(target, config)
+        return CaptureRunner(
+            target,
+            config,
+            recorder=self._store.create_recorder(
+                "capture", target.base_url, config.estimated_records()
+            ),
+        )
+
+    @staticmethod
+    def _fail_session_start(recorder: SessionRecorder, exc: Exception) -> None:
+        try:
+            recorder.fail(f"{type(exc).__name__}: {exc}")
+        except Exception:
+            LOGGER.exception("could not mark failed persistent session start")
 
     def _authoritative_context(
         self,
@@ -567,6 +657,23 @@ class DragonSniffHandler(BaseHTTPRequestHandler):
             self._send(200, body, content_type)
         elif path == "/local/v1/session":
             self._send_json(200, self.manager.snapshot())
+        elif path == "/local/v1/history":
+            self._send_json(200, self.manager.history())
+        elif self._history_route(path, "") is not None:
+            session_id = self._history_route(path, "")
+            session = self.manager.historical_session(session_id)
+            if session is None:
+                self._send_json(404, {"error": "session_not_found"})
+                return
+            self._send_json(200, session)
+        elif self._history_route(path, "/export") is not None:
+            session_id = self._history_route(path, "/export")
+            session = self.manager.historical_session(session_id)
+            with self.manager.lease_historical_evidence(session_id) as evidence:
+                if session is None or evidence is None:
+                    self._send_json(404, {"error": "session_not_found"})
+                    return
+                self._send_file(evidence, export_filename(session))
         elif path == "/local/v1/session/export":
             body = self.manager.export_jsonl().encode("utf-8")
             self._send(
@@ -613,6 +720,14 @@ class DragonSniffHandler(BaseHTTPRequestHandler):
             )
         else:
             self._send_json(404, {"error": "not_found"})
+
+    @staticmethod
+    def _history_route(path: str, suffix: str) -> str | None:
+        prefix = "/local/v1/history/"
+        if not path.startswith(prefix) or not path.endswith(suffix):
+            return None
+        session_id = path[len(prefix) : len(path) - len(suffix) if suffix else None]
+        return session_id if is_valid_session_id(session_id) else None
 
     def do_POST(self) -> None:
         path = urlsplit(self.path).path
@@ -728,6 +843,20 @@ class DragonSniffHandler(BaseHTTPRequestHandler):
             json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
             "application/json; charset=utf-8",
         )
+
+    def _send_file(self, stream: BinaryIO, filename: str) -> None:
+        remaining = os.fstat(stream.fileno()).st_size
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+        self.send_header("Content-Length", str(remaining))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Content-Security-Policy", "default-src 'self'; connect-src 'self'")
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.end_headers()
+        while remaining and (chunk := stream.read(min(64 * 1024, remaining))):
+            self.wfile.write(chunk)
+            remaining -= len(chunk)
 
     def _send(
         self,

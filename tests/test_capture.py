@@ -1,12 +1,15 @@
 import threading
 import time
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from typing import Callable
 from unittest import TestCase
+from unittest.mock import patch
 
 from dragonsniff.capture import CaptureConfig, CaptureRunner
 from dragonsniff.client import DragonClient
 from dragonsniff.recording import SessionRecorder
+from dragonsniff.storage import SessionStore
 from dragonsniff.target import parse_target
 
 from tests.test_client import DeviceFixture
@@ -248,6 +251,41 @@ class CaptureRunnerTests(TestCase):
             for record in runner.recorder.snapshot()
         ))
         self.assert_clean(runner)
+
+    def test_mid_run_durable_write_failure_is_terminal_and_survives_restart(self) -> None:
+        with TemporaryDirectory() as temporary:
+            store = SessionStore(temporary)
+            recorder = store.create_recorder(
+                "capture", "http://dragon.local", short_config().estimated_records()
+            )
+            runner = CaptureRunner(
+                parse_target("dragon.local"), short_config(), recorder=recorder
+            )
+            real_append = store.append
+
+            def fail_first_request(session_id, record):
+                if record["kind"] == "http_request":
+                    raise OSError(28, "No space left on device")
+                return real_append(session_id, record)
+
+            with patch.object(store, "append", side_effect=fail_first_request):
+                runner.start()
+                self.assertTrue(runner.wait_finished(2.0))
+                snapshot = runner.snapshot()
+
+            metadata = store.get_session(recorder.session_id)
+            self.assertEqual(snapshot["state"], "failed")
+            self.assertTrue(snapshot["cleanup_complete"])
+            self.assertIsNotNone(snapshot["end_timestamp"])
+            self.assertEqual(metadata["status"], "failed")
+            self.assertIn("No space left", metadata["failure"])
+            self.assertIsNotNone(metadata["finished_at"])
+            self.assert_clean(runner)
+
+            recovered = SessionStore(temporary)
+            self.assertEqual(
+                recovered.get_session(recorder.session_id)["status"], "failed"
+            )
 
     def test_malformed_status_line_counts_as_failed_sample_without_aborting_capture(self) -> None:
         with DeviceFixture({"bad_status_once": {"/api/v2/health"}}) as fixture:
