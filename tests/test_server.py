@@ -453,6 +453,34 @@ class ServerTests(TestCase):
         self.assertIn(b'"kind":"session_started"', export_body)
         self.assertIn("dragonsniff-observation-", disposition)
 
+    def test_interrupted_recovery_stays_idle_and_exports_preserved_evidence(self) -> None:
+        with TemporaryDirectory() as temporary:
+            store = SessionStore(temporary)
+            recorder = store.create_recorder("capture", "http://dragon.local", 10)
+            recorder.append("capture_run_started", run_id="run")
+            recorder.append("http_request", request_id="request-60")
+            expected = (
+                Path(temporary)
+                / "sessions"
+                / recorder.session_id
+                / "evidence.jsonl"
+            ).read_bytes()
+
+            manager = SessionManager(store=SessionStore(temporary))
+            with LocalServerFixture(manager) as local:
+                _, snapshot_body, _ = local.request("GET", "/local/v1/session")
+                _, history_body, _ = local.request("GET", "/local/v1/history")
+                status, exported, _ = local.download(
+                    f"/local/v1/history/{recorder.session_id}/export"
+                )
+
+        self.assertEqual(json.loads(snapshot_body)["active_mode"], "idle")
+        recovered = json.loads(history_body)["sessions"]
+        self.assertEqual(len(recovered), 1)
+        self.assertEqual(recovered[0]["status"], "interrupted")
+        self.assertEqual(status, 200)
+        self.assertEqual(exported, expected)
+
     def test_history_storage_traversal_failure_returns_json_and_server_survives(self) -> None:
         with TemporaryDirectory() as temporary:
             manager = SessionManager(store=SessionStore(temporary))
