@@ -22,6 +22,51 @@
     return formatted === undefined ? null : formatted;
   }
 
+  function formatBytes(bytes) {
+    if (!Number.isSafeInteger(bytes) || bytes < 0) return null;
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    let value = bytes;
+    let unit = 0;
+    while (value >= 1024 && unit < units.length - 1) {
+      value /= 1024;
+      unit += 1;
+    }
+    let rounded = unit === 0 ? value : Number(value.toFixed(1));
+    if (rounded >= 1024 && unit < units.length - 1) {
+      value /= 1024;
+      unit += 1;
+      rounded = Number(value.toFixed(1));
+    }
+    const formatted = String(rounded);
+    return `${formatted} ${units[unit]}`;
+  }
+
+  function historyStorageSummary(storage) {
+    if (!storage || typeof storage !== "object" || Array.isArray(storage)) return null;
+    const validSessions = Number.isSafeInteger(storage.valid_sessions)
+      && storage.valid_sessions >= 0 ? storage.valid_sessions : null;
+    const validBytes = formatBytes(storage.valid_bytes);
+    let retained = null;
+    if (validSessions !== null && validBytes !== null) {
+      retained = `${validSessions} ${validSessions === 1 ? "session" : "sessions"} · ${validBytes} retained`;
+    } else if (validSessions !== null) {
+      retained = `${validSessions} ${validSessions === 1 ? "session" : "sessions"} retained`;
+    } else if (validBytes !== null) {
+      retained = `${validBytes} retained`;
+    }
+
+    const invalidSessions = Number.isSafeInteger(storage.invalid_sessions)
+      && storage.invalid_sessions > 0 ? storage.invalid_sessions : null;
+    const invalidBytes = invalidSessions === null || storage.invalid_bytes === 0
+      ? null
+      : formatBytes(storage.invalid_bytes);
+    const invalid = invalidSessions === null
+      ? null
+      : `${invalidSessions} invalid storage ${invalidSessions === 1 ? "object" : "objects"}${invalidBytes === null ? "" : ` · ${invalidBytes}`}`;
+
+    return retained === null && invalid === null ? null : {retained, invalid};
+  }
+
   function churnSummaryText(churn) {
     if (!churn || !churn.run_id) return null;
     const fields = [
@@ -134,6 +179,8 @@
 
   return {
     payloadText,
+    formatBytes,
+    historyStorageSummary,
     churnSummaryText,
     churnHealthText,
     churnProfileConfiguration,
