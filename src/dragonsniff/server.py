@@ -1,13 +1,15 @@
-"""Loopback-only DragonSniff application server."""
+"""DragonSniff application server with an explicit browser authority boundary."""
 
 from __future__ import annotations
 
 from contextlib import nullcontext
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
+from ipaddress import ip_address
 import json
 import logging
 import os
+import re
 from threading import BoundedSemaphore, Event, Lock, Thread, current_thread
 import time
 from typing import Any, BinaryIO, ContextManager, Iterable
@@ -22,6 +24,7 @@ from .target import DeviceTarget, TargetValidationError, parse_target
 
 
 LOGGER = logging.getLogger(__name__)
+HOSTNAME_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
 
 
 MAX_LOCAL_REQUEST_BYTES = 16_384
@@ -50,6 +53,72 @@ EXPORT_FILENAMES = {
     "capture": "dragonsniff-thermal-capture.jsonl",
     "churn": "dragonsniff-sse-churn.jsonl",
 }
+
+
+def normalize_ui_authority(value: str) -> str:
+    """Return a canonical exact Host authority or reject unsafe configuration."""
+    authority = value.strip()
+    if (
+        not authority
+        or "*" in authority
+        or any(character.isspace() for character in authority)
+    ):
+        raise ValueError(f"invalid allowed UI authority: {value!r}")
+    if "://" in authority or any(character in authority for character in "/?#@"):
+        raise ValueError(f"invalid allowed UI authority: {value!r}")
+
+    parsed = urlsplit(f"//{authority}")
+    try:
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError(f"invalid allowed UI authority: {value!r}") from exc
+    if (
+        host is None
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path
+        or parsed.query
+        or parsed.fragment
+        or parsed.netloc.endswith(":")
+    ):
+        raise ValueError(f"invalid allowed UI authority: {value!r}")
+    try:
+        host.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise ValueError(f"invalid allowed UI authority: {value!r}") from exc
+
+    normalized_host = host.lower()
+    try:
+        address = ip_address(normalized_host)
+    except ValueError:
+        if len(normalized_host) > 253 or any(
+            HOSTNAME_LABEL.fullmatch(label) is None
+            for label in normalized_host.split(".")
+        ):
+            raise ValueError(f"invalid allowed UI authority: {value!r}") from None
+    else:
+        normalized_host = address.compressed
+    if ":" in normalized_host:
+        normalized_host = f"[{normalized_host}]"
+    return normalized_host if port is None else f"{normalized_host}:{port}"
+
+
+def origin_authority(value: str) -> str:
+    """Extract a canonical HTTP(S) authority from an Origin header."""
+    origin = value.strip()
+    parsed = urlsplit(origin)
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("invalid Origin")
+    return normalize_ui_authority(parsed.netloc)
 
 
 class SessionManager:
@@ -800,16 +869,13 @@ class DragonSniffHandler(BaseHTTPRequestHandler):
         except (TargetValidationError, ValueError, RuntimeError) as exc:
             self._send_json(400, {"error": "invalid_request", "message": str(exc)})
 
-    def _allowed_authorities(self) -> set[str]:
-        port = self.server.server_port
-        authorities = {f"127.0.0.1:{port}", f"localhost:{port}"}
-        if port == 80:
-            authorities.update({"127.0.0.1", "localhost"})
-        return authorities
-
     def _validate_host(self) -> bool:
-        authority = self.headers.get("Host", "").strip().lower()
-        if authority not in self._allowed_authorities():
+        try:
+            authority = normalize_ui_authority(self.headers.get("Host", ""))
+        except ValueError:
+            authority = ""
+        allowed = self.server.allowed_ui_authorities  # type: ignore[attr-defined]
+        if authority not in allowed:
             self._send_json(403, {"error": "forbidden", "message": "unexpected Host"})
             return False
         return True
@@ -818,8 +884,13 @@ class DragonSniffHandler(BaseHTTPRequestHandler):
         origin = self.headers.get("Origin")
         if origin is None:
             return True
-        authority = self.headers.get("Host", "").strip().lower()
-        if origin.strip().lower() != f"http://{authority}":
+        try:
+            authority = normalize_ui_authority(self.headers.get("Host", ""))
+            supplied_origin_authority = origin_authority(origin)
+        except ValueError:
+            authority = ""
+            supplied_origin_authority = "invalid"
+        if supplied_origin_authority != authority:
             self._send_json(403, {"error": "forbidden", "message": "unexpected Origin"})
             return False
         return True
@@ -894,7 +965,7 @@ class DragonSniffHandler(BaseHTTPRequestHandler):
 
 
 class DragonSniffServer(ThreadingHTTPServer):
-    """A bounded threaded server with a loopback-oriented browser boundary."""
+    """A bounded threaded server with an exact browser authority allowlist."""
 
     REQUEST_WORKER_LIMIT = 8
     REQUEST_SLOT_TIMEOUT = 0.25
@@ -906,6 +977,7 @@ class DragonSniffServer(ThreadingHTTPServer):
         manager: SessionManager | None = None,
         *,
         allow_wildcard_bind: bool = False,
+        allowed_ui_authorities: Iterable[str] = (),
     ) -> None:
         loopback = {"127.0.0.1", "localhost", "::1"}
         if address[0] not in loopback and not (
@@ -914,9 +986,19 @@ class DragonSniffServer(ThreadingHTTPServer):
             raise ValueError(
                 "DragonSniff binds to loopback unless 0.0.0.0 is explicitly enabled"
             )
+        configured_authorities = frozenset(
+            normalize_ui_authority(value) for value in allowed_ui_authorities
+        )
         self.session_manager = manager or SessionManager()
         self._request_slots = BoundedSemaphore(self.REQUEST_WORKER_LIMIT)
         super().__init__(address, DragonSniffHandler)
+        port = self.server_port
+        default_authorities = {f"127.0.0.1:{port}", f"localhost:{port}"}
+        if port == 80:
+            default_authorities.update({"127.0.0.1", "localhost"})
+        self.allowed_ui_authorities = frozenset(
+            default_authorities | configured_authorities
+        )
 
     def process_request(self, request: Any, client_address: Any) -> None:
         if not self._request_slots.acquire(timeout=self.REQUEST_SLOT_TIMEOUT):
