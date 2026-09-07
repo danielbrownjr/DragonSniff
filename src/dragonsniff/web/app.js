@@ -346,6 +346,25 @@ function renderHistory(sessions) {
   });
 }
 
+function renderHistoryStorage(storage) {
+  const container = document.querySelector("#historyStorageSummary");
+  const summary = payloadTools.historyStorageSummary(storage);
+  container.replaceChildren();
+  container.hidden = summary === null;
+  if (summary === null) return;
+  if (summary.retained !== null) {
+    const retained = document.createElement("span");
+    retained.textContent = summary.retained;
+    container.append(retained);
+  }
+  if (summary.invalid !== null) {
+    const invalid = document.createElement("span");
+    invalid.className = "history-storage-invalid";
+    invalid.textContent = summary.invalid;
+    container.append(invalid);
+  }
+}
+
 async function updateHistory() {
   if (historyRequestInFlight) return;
   historyRequestInFlight = true;
@@ -353,12 +372,14 @@ async function updateHistory() {
   try {
     const result = await localRequest("/local/v1/history");
     renderHistory(Array.isArray(result.sessions) ? result.sessions : []);
+    renderHistoryStorage(result.storage);
     showNotice(
       historyNotice,
       result.persistent ? "" : "Persistent storage is not configured for this DragonSniff service.",
       result.persistent ? "available" : "idle",
     );
   } catch (error) {
+    renderHistoryStorage(null);
     showNotice(historyNotice, `Could not load session history: ${error.message}`, "error");
   } finally {
     historyRequestInFlight = false;

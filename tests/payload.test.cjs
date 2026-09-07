@@ -11,10 +11,84 @@ const {
   churnHealthText,
   churnProfileConfiguration,
   churnSummaryText,
+  formatBytes,
+  historyStorageSummary,
   payloadText,
   resolvePage,
   thermalSnapshot,
 } = require("../src/dragonsniff/web/payload.js");
+
+test("byte formatting uses deterministic binary units", () => {
+  assert.equal(formatBytes(0), "0 B");
+  assert.equal(formatBytes(1023), "1023 B");
+  assert.equal(formatBytes(1536), "1.5 KB");
+  assert.equal(formatBytes(50_646_221), "48.3 MB");
+  assert.equal(formatBytes(5 * 1024 ** 3), "5 GB");
+  assert.equal(formatBytes(-1), null);
+  assert.equal(formatBytes("1024"), null);
+});
+
+test("History summary renders retained sessions and bytes quietly when valid", () => {
+  assert.deepEqual(historyStorageSummary({
+    retained_sessions: 0,
+    retained_bytes: 0,
+    invalid_sessions: 0,
+    invalid_bytes: 0,
+  }), {
+    retained: "0 sessions · 0 B retained",
+    invalid: null,
+  });
+  assert.deepEqual(historyStorageSummary({
+    retained_sessions: 12,
+    retained_bytes: 50_646_221,
+    invalid_sessions: 0,
+    invalid_bytes: 0,
+  }), {
+    retained: "12 sessions · 48.3 MB retained",
+    invalid: null,
+  });
+});
+
+test("History summary calls out invalid storage only when its count is nonzero", () => {
+  assert.deepEqual(historyStorageSummary({
+    retained_sessions: 1,
+    retained_bytes: 1024,
+    invalid_sessions: 1,
+    invalid_bytes: 0,
+  }), {
+    retained: "1 session · 1 KB retained",
+    invalid: "1 invalid storage object",
+  });
+  assert.deepEqual(historyStorageSummary({
+    retained_sessions: 12,
+    retained_bytes: 50_646_221,
+    invalid_sessions: 2,
+    invalid_bytes: 1_782_579,
+  }), {
+    retained: "12 sessions · 48.3 MB retained",
+    invalid: "2 invalid storage objects · 1.7 MB",
+  });
+});
+
+test("History summary tolerates absent and malformed storage data", () => {
+  assert.equal(historyStorageSummary(undefined), null);
+  assert.equal(historyStorageSummary([]), null);
+  assert.equal(historyStorageSummary({
+    retained_sessions: "12",
+    retained_bytes: -1,
+    invalid_sessions: "2",
+    invalid_bytes: Number.NaN,
+  }), null);
+  assert.deepEqual(historyStorageSummary({
+    retained_sessions: 1,
+    retained_bytes: "unknown",
+    invalid_sessions: 1,
+    invalid_bytes: "unknown",
+  }), {
+    retained: "1 session retained",
+    invalid: "1 invalid storage object",
+  });
+});
 
 test("parsed copy uses stable formatted JSON and preserves unknown fields", () => {
   const result = {parsed: {api_version: 2, future_field: {value: true}}, parse_error: null};

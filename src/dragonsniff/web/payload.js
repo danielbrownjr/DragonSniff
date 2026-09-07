@@ -22,6 +22,45 @@
     return formatted === undefined ? null : formatted;
   }
 
+  function formatBytes(bytes) {
+    if (!Number.isSafeInteger(bytes) || bytes < 0) return null;
+    const units = ["B", "KB", "MB", "GB"];
+    let value = bytes;
+    let unit = 0;
+    while (value >= 1024 && unit < units.length - 1) {
+      value /= 1024;
+      unit += 1;
+    }
+    const formatted = unit === 0 ? String(value) : String(Number(value.toFixed(1)));
+    return `${formatted} ${units[unit]}`;
+  }
+
+  function historyStorageSummary(storage) {
+    if (!storage || typeof storage !== "object" || Array.isArray(storage)) return null;
+    const retainedSessions = Number.isSafeInteger(storage.retained_sessions)
+      && storage.retained_sessions >= 0 ? storage.retained_sessions : null;
+    const retainedBytes = formatBytes(storage.retained_bytes);
+    let retained = null;
+    if (retainedSessions !== null && retainedBytes !== null) {
+      retained = `${retainedSessions} ${retainedSessions === 1 ? "session" : "sessions"} · ${retainedBytes} retained`;
+    } else if (retainedSessions !== null) {
+      retained = `${retainedSessions} ${retainedSessions === 1 ? "session" : "sessions"} retained`;
+    } else if (retainedBytes !== null) {
+      retained = `${retainedBytes} retained`;
+    }
+
+    const invalidSessions = Number.isSafeInteger(storage.invalid_sessions)
+      && storage.invalid_sessions > 0 ? storage.invalid_sessions : null;
+    const invalidBytes = invalidSessions === null || storage.invalid_bytes === 0
+      ? null
+      : formatBytes(storage.invalid_bytes);
+    const invalid = invalidSessions === null
+      ? null
+      : `${invalidSessions} invalid storage ${invalidSessions === 1 ? "object" : "objects"}${invalidBytes === null ? "" : ` · ${invalidBytes}`}`;
+
+    return retained === null && invalid === null ? null : {retained, invalid};
+  }
+
   function churnSummaryText(churn) {
     if (!churn || !churn.run_id) return null;
     const fields = [
@@ -134,6 +173,8 @@
 
   return {
     payloadText,
+    formatBytes,
+    historyStorageSummary,
     churnSummaryText,
     churnHealthText,
     churnProfileConfiguration,

@@ -341,6 +341,9 @@ pre {
 .timeline li { border-left: 2px solid var(--primary); padding-left: 12px; }
 .timeline-heading { display: flex; justify-content: space-between; gap: 16px; color: var(--muted-foreground); font-size: .72rem; }
 .timeline pre { max-height: 160px; margin-top: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.history-storage-summary { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 10px 0 0; color: var(--muted-foreground); font-size: .78rem; }
+.history-storage-summary[hidden] { display: none; }
+.history-storage-invalid { color: var(--warn); }
 .history-scroll { overflow-x: auto; margin-top: 12px; }
 .history-table { width: 100%; border-collapse: collapse; font-size: .78rem; }
 .history-table th, .history-table td { padding: 9px 10px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
