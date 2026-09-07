@@ -111,8 +111,11 @@ class ServerTests(TestCase):
             self.assertEqual(status, 200)
             self.assertEqual(json.loads(body)["session_state"], "idle")
 
-    def test_missing_automation_exports_return_not_found(self) -> None:
+    def test_missing_current_and_automation_exports_return_not_found(self) -> None:
         with LocalServerFixture() as local:
+            session_status, session_body, _ = local.request(
+                "GET", "/local/v1/session/export"
+            )
             capture_status, capture_body, _ = local.request(
                 "GET", "/local/v1/capture/export"
             )
@@ -120,6 +123,10 @@ class ServerTests(TestCase):
                 "GET", "/local/v1/churn/export"
             )
 
+        self.assertEqual(session_status, 404)
+        self.assertEqual(
+            json.loads(session_body), {"error": "session_evidence_not_available"}
+        )
         self.assertEqual(capture_status, 404)
         self.assertEqual(
             json.loads(capture_body), {"error": "capture_evidence_not_available"}
@@ -206,6 +213,10 @@ class ServerTests(TestCase):
         self.assertIn("Watch the dragon breathe", html)
         self.assertIn("Start passive capture", html)
         self.assertIn("Download thermal capture JSONL", html)
+        self.assertIn(
+            '<a id="exportLink" class="button-link" download aria-disabled="true">No current evidence</a>',
+            html,
+        )
         self.assertIn('id="captureProfile"', html)
         self.assertIn('id="captureBudget"', html)
         self.assertIn('id="thermal-heading">Thermals', html)

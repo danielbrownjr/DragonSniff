@@ -406,9 +406,12 @@ class SessionManager:
             ]
         return result
 
-    def export_jsonl(self) -> str:
+    def export_jsonl(self) -> str | None:
         _, _, _, _, recorder, _ = self._authoritative_context()
-        return recorder.export_jsonl() if recorder is not None else ""
+        if recorder is None:
+            return None
+        export = recorder.export_jsonl()
+        return export or None
 
     def export_churn_jsonl(self) -> str | None:
         churn = self.current_churn()
@@ -690,7 +693,11 @@ class DragonSniffHandler(BaseHTTPRequestHandler):
                     return
                 self._send_file(evidence, export_filename(session))
         elif path == "/local/v1/session/export":
-            body = self.manager.export_jsonl().encode("utf-8")
+            export = self.manager.export_jsonl()
+            if export is None:
+                self._send_json(404, {"error": "session_evidence_not_available"})
+                return
+            body = export.encode("utf-8")
             self._send(
                 200,
                 body,

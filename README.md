@@ -127,7 +127,7 @@ Only one operating mode is active at a time. The UI identifies the active mode, 
 
 ## Exporting evidence
 
-Use **Bag evidence as JSONL** for the active session. Thermal and Churn provide run-specific downloads once their evidence exists. JSONL records retain timestamps, request identities, raw response bodies, parsed JSON when valid, SSE lifecycle events, and cleanup outcomes.
+The dashboard offers **Download current session JSONL** only while the current session owns recorded evidence; otherwise it says **No current evidence**. Thermal and Churn provide run-specific downloads once their evidence exists. **History** is the durable, authoritative source for prior persisted sessions. JSONL records retain timestamps, request identities, raw response bodies, parsed JSON when valid, SSE lifecycle events, and cleanup outcomes.
 
 Downloads use stable names that identify their ownership: `dragonsniff-session.jsonl` for the active session, `dragonsniff-thermal-capture.jsonl` for a retained Thermal run, and `dragonsniff-sse-churn.jsonl` for a retained Churn run.
 
