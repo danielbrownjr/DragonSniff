@@ -120,6 +120,7 @@ class SessionStore:
         self.retention_sessions = retention_sessions
         self._lock = Lock()
         self._metadata: dict[str, dict[str, Any]] = {}
+        self._invalid_sessions: dict[str, str] = {}
         self._pending_checkpoints: dict[str, int] = {}
         self._download_leases: dict[str, int] = {}
 
@@ -242,6 +243,21 @@ class SessionStore:
             metadata = self._metadata.get(session_id)
             return deepcopy(metadata) if metadata is not None else None
 
+    def storage_summary(self) -> dict[str, int]:
+        """Report all canonical retained storage, including invalid sessions."""
+        with self._lock:
+            objects = self._storage_objects_locked()
+        valid = [item for item in objects if item["valid"]]
+        invalid = [item for item in objects if not item["valid"]]
+        return {
+            "retained_sessions": len(objects),
+            "retained_bytes": sum(item["bytes"] for item in objects),
+            "valid_sessions": len(valid),
+            "valid_bytes": sum(item["bytes"] for item in valid),
+            "invalid_sessions": len(invalid),
+            "invalid_bytes": sum(item["bytes"] for item in invalid),
+        }
+
     @contextmanager
     def lease_evidence(self, session_id: object) -> Iterator[BinaryIO | None]:
         """Open evidence while preventing retention from deleting its session."""
@@ -273,20 +289,17 @@ class SessionStore:
 
     def enforce_retention(self) -> None:
         with self._lock:
-            sessions = list(self._metadata.values())
-            total = sum(
-                self._directory_size(self._session_dir(item["session_id"]))
-                for item in sessions
-            )
+            objects = self._storage_objects_locked()
+            total = sum(item["bytes"] for item in objects)
             candidates = sorted(
                 (
                     item
-                    for item in sessions
-                    if item["status"] != "active"
+                    for item in objects
+                    if not item["active"]
                 ),
-                key=lambda item: item["created_at"],
+                key=lambda item: (item["order"], item["session_id"]),
             )
-            retained_count = len(sessions)
+            retained_count = len(objects)
             removed = False
             for item in candidates:
                 if (
@@ -296,9 +309,13 @@ class SessionStore:
                     break
                 session_id = item["session_id"]
                 if self._download_leases.get(session_id):
-                    break
+                    continue
                 path = self._session_dir(session_id)
-                size = self._directory_size(path)
+                if not item["valid"]:
+                    LOGGER.warning(
+                        "removing invalid retained session %s to satisfy retention",
+                        session_id,
+                    )
                 try:
                     shutil.rmtree(path)
                 except OSError as exc:
@@ -309,8 +326,9 @@ class SessionStore:
                     )
                     break
                 self._metadata.pop(session_id, None)
+                self._invalid_sessions.pop(session_id, None)
                 self._pending_checkpoints.pop(session_id, None)
-                total -= size
+                total -= item["bytes"]
                 retained_count -= 1
                 removed = True
             if removed:
@@ -323,12 +341,13 @@ class SessionStore:
             try:
                 metadata = self._read_metadata_file_locked(path.name)
             except (
-                FileNotFoundError,
+                OSError,
                 json.JSONDecodeError,
                 KeyError,
                 TypeError,
                 ValueError,
-            ):
+            ) as exc:
+                self._register_invalid_locked(path.name, exc)
                 continue
             session_id = metadata["session_id"]
             evidence_changed = self._repair_partial_tail_locked(session_id, metadata)
@@ -353,6 +372,69 @@ class SessionStore:
             self._pending_checkpoints[session_id] = 0
             if metadata_changed or evidence_changed:
                 self._write_metadata_locked(session_id, metadata)
+
+    def _storage_objects_locked(self) -> list[dict[str, Any]]:
+        self._discover_invalid_sessions_locked()
+        objects = [
+            {
+                "session_id": metadata["session_id"],
+                "bytes": self._directory_size(
+                    self._session_dir(metadata["session_id"])
+                ),
+                "order": metadata["created_at"],
+                "valid": True,
+                "active": metadata["status"] == "active",
+            }
+            for metadata in self._metadata.values()
+        ]
+        for session_id in self._invalid_sessions:
+            path = self._session_dir(session_id)
+            if path.is_dir() and not path.is_symlink():
+                objects.append(
+                    {
+                        "session_id": session_id,
+                        "bytes": self._directory_size(path),
+                        "order": self._filesystem_order(path),
+                        "valid": False,
+                        "active": False,
+                    }
+                )
+        return objects
+
+    def _discover_invalid_sessions_locked(self) -> None:
+        present: set[str] = set()
+        for path in self.sessions_dir.iterdir():
+            if path.is_symlink() or not path.is_dir() or not is_valid_session_id(path.name):
+                continue
+            session_id = path.name
+            if session_id in self._metadata:
+                continue
+            present.add(session_id)
+            if session_id not in self._invalid_sessions:
+                self._register_invalid_locked(
+                    session_id,
+                    ValueError("canonical session directory was not loaded at startup"),
+                )
+        for session_id in set(self._invalid_sessions) - present:
+            self._invalid_sessions.pop(session_id, None)
+
+    def _register_invalid_locked(self, session_id: str, exc: Exception) -> None:
+        reason = f"{type(exc).__name__}: {exc}"
+        self._invalid_sessions[session_id] = reason
+        LOGGER.warning(
+            "retaining invalid session %s for storage accounting: %s",
+            session_id,
+            reason,
+        )
+
+    @staticmethod
+    def _filesystem_order(path: Path) -> str:
+        """Use directory mtime only as an invalid-session retention fallback."""
+        try:
+            modified = path.stat().st_mtime
+        except OSError:
+            return ""
+        return datetime.fromtimestamp(modified, timezone.utc).isoformat()
 
     def _repair_partial_tail_locked(
         self, session_id: str, metadata: dict[str, Any]
@@ -421,13 +503,15 @@ class SessionStore:
         if not isinstance(value, dict):
             raise ValueError("invalid session metadata")
         if value.get("session_id") != session_id or not is_valid_session_id(session_id):
-            raise ValueError("invalid session metadata")
+            raise ValueError("session metadata ID does not match its directory")
         if value.get("format_version") != FORMAT_VERSION:
-            raise ValueError("invalid session metadata")
+            raise ValueError(
+                f'unsupported session metadata format version: {value.get("format_version")!r}'
+            )
         if value.get("kind") not in SESSION_KINDS:
-            raise ValueError("invalid session metadata")
+            raise ValueError("invalid session metadata kind")
         if value.get("status") not in SESSION_STATUSES:
-            raise ValueError("invalid session metadata")
+            raise ValueError("invalid session metadata status")
         for name in ("target", "created_at", "updated_at"):
             if not isinstance(value.get(name), str):
                 raise ValueError("invalid session metadata")
@@ -482,10 +566,27 @@ class SessionStore:
 
     @staticmethod
     def _directory_size(path: Path) -> int:
-        try:
-            return sum(item.stat().st_size for item in path.iterdir() if item.is_file())
-        except OSError:
-            return 0
+        total = 0
+        pending = [path]
+        while pending:
+            current = pending.pop()
+            try:
+                entries = list(os.scandir(current))
+            except OSError:
+                try:
+                    total += current.stat().st_size
+                except OSError:
+                    pass
+                continue
+            for entry in entries:
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        pending.append(Path(entry.path))
+                    else:
+                        total += entry.stat(follow_symlinks=False).st_size
+                except OSError:
+                    continue
+        return total
 
     @staticmethod
     def _write_all(descriptor: int, value: bytes) -> None:

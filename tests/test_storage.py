@@ -14,6 +14,10 @@ def evidence_bytes(store: SessionStore, session_id: str) -> bytes | None:
         return stream.read() if stream is not None else None
 
 
+def directory_bytes(path: Path) -> int:
+    return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
+
+
 class SessionStoreTests(TestCase):
     def test_records_are_persisted_incrementally_and_finish_cleanly(self) -> None:
         with TemporaryDirectory() as temporary:
@@ -267,19 +271,79 @@ class SessionStoreTests(TestCase):
                 IO_CHUNK_BYTES * 3 + 7,
             )
 
-    def test_download_lease_defers_retention_of_open_session(self) -> None:
+    def test_leased_oldest_session_does_not_block_later_reclamation(self) -> None:
         with TemporaryDirectory() as temporary:
             store = SessionStore(
-                temporary, retention_bytes=1_000_000, retention_sessions=1
+                temporary, retention_bytes=1_000_000, retention_sessions=10
             )
             first = store.create_recorder("observation", "http://one.local", 10)
             first.append("session_stopped")
             with store.lease_evidence(first.session_id) as stream:
                 second = store.create_recorder("observation", "http://two.local", 10)
                 second.append("session_stopped")
+                store.retention_bytes = 1
+                store.enforce_retention()
                 self.assertIsNotNone(stream)
                 self.assertIsNotNone(store.get_session(first.session_id))
+                self.assertIsNone(store.get_session(second.session_id))
             self.assertIsNone(store.get_session(first.session_id))
+
+    def test_malformed_session_is_accounted_then_reclaimed_before_valid_session(self) -> None:
+        with TemporaryDirectory() as temporary:
+            store = SessionStore(temporary, retention_bytes=1_000_000)
+            corrupt = store.create_recorder("observation", "http://bad.local", 10)
+            corrupt.append("sample", payload="x" * 4_096)
+            corrupt.append("session_stopped")
+            valid = store.create_recorder("observation", "http://good.local", 10)
+            valid.append("sample", payload="y" * 1_024)
+            valid.append("session_stopped")
+            sessions = Path(temporary) / "sessions"
+            corrupt_path = sessions / corrupt.session_id
+            valid_path = sessions / valid.session_id
+            (corrupt_path / "metadata.json").write_text("{broken", encoding="utf-8")
+            actual_bytes = directory_bytes(corrupt_path) + directory_bytes(valid_path)
+
+            with self.assertLogs("dragonsniff.storage", level="WARNING"):
+                reopened = SessionStore(temporary, retention_bytes=actual_bytes + 1)
+            summary = reopened.storage_summary()
+
+            self.assertEqual(len(reopened.list_sessions()), 1)
+            self.assertIsNone(reopened.get_session(corrupt.session_id))
+            self.assertEqual(summary["retained_sessions"], 2)
+            self.assertEqual(summary["invalid_sessions"], 1)
+            self.assertEqual(summary["retained_bytes"], actual_bytes)
+            self.assertEqual(summary["invalid_bytes"], directory_bytes(corrupt_path))
+
+            reopened.retention_bytes = directory_bytes(valid_path)
+            with self.assertLogs("dragonsniff.storage", level="WARNING"):
+                reopened.enforce_retention()
+
+            self.assertFalse(corrupt_path.exists())
+            self.assertTrue(valid_path.exists())
+            self.assertIsNotNone(reopened.get_session(valid.session_id))
+            self.assertEqual(reopened.storage_summary()["invalid_sessions"], 0)
+
+    def test_future_format_session_is_invalid_but_accounted(self) -> None:
+        with TemporaryDirectory() as temporary:
+            store = SessionStore(temporary, retention_bytes=1_000_000)
+            recorder = store.create_recorder("capture", "http://future.local", 10)
+            recorder.append("capture_run_completed")
+            session_path = Path(temporary) / "sessions" / recorder.session_id
+            metadata_path = session_path / "metadata.json"
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata["format_version"] = 999
+            metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+            with self.assertLogs("dragonsniff.storage", level="WARNING"):
+                reopened = SessionStore(temporary, retention_bytes=1_000_000)
+
+            self.assertIsNone(reopened.get_session(recorder.session_id))
+            self.assertEqual(reopened.list_sessions(), [])
+            self.assertEqual(reopened.storage_summary()["invalid_sessions"], 1)
+            self.assertEqual(
+                reopened.storage_summary()["invalid_bytes"],
+                directory_bytes(session_path),
+            )
 
     def test_retention_deletion_failure_is_nonfatal_and_retried(self) -> None:
         with TemporaryDirectory() as temporary:

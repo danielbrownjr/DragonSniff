@@ -422,6 +422,9 @@ class SessionManager:
         return {
             "persistent": self._store is not None,
             "sessions": self._store.list_sessions() if self._store is not None else [],
+            "storage": (
+                self._store.storage_summary() if self._store is not None else None
+            ),
         }
 
     def historical_session(self, session_id: str) -> dict[str, Any] | None:
