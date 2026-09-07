@@ -10,7 +10,12 @@ from unittest.mock import patch
 
 from dragonsniff.capture import CaptureConfig
 from dragonsniff.recording import SessionRecorder
-from dragonsniff.server import DragonSniffHandler, DragonSniffServer, SessionManager
+from dragonsniff.server import (
+    DragonSniffHandler,
+    DragonSniffServer,
+    SessionManager,
+    normalize_ui_authority,
+)
 from dragonsniff.storage import SessionStore
 from dragonsniff.target import parse_target
 
@@ -92,6 +97,106 @@ class ServerTests(TestCase):
             server.server_close()
             thread.join(timeout=2)
 
+    def test_configured_ui_authorities_are_additive_exact_and_normalized(self) -> None:
+        server = DragonSniffServer(
+            ("127.0.0.1", 0),
+            allowed_ui_authorities=(
+                "192.0.2.10:8766",
+                "DragonSniff.Home.Arpa:8443",
+                "dragonsniff.home.arpa:8443",
+            ),
+        )
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = server.server_port
+            for authority in (
+                f"127.0.0.1:{port}",
+                f"localhost:{port}",
+                "192.0.2.10:8766",
+                "DRAGONSNIFF.HOME.ARPA:8443",
+            ):
+                connection = HTTPConnection("127.0.0.1", port, timeout=2)
+                connection.request("GET", "/healthz", headers={"Host": authority})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 200, authority)
+                response.read()
+                connection.close()
+
+            for authority in ("192.0.2.11:8766", "192.0.2.10:8765"):
+                connection = HTTPConnection("127.0.0.1", port, timeout=2)
+                connection.request("GET", "/healthz", headers={"Host": authority})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 403, authority)
+                response.read()
+                connection.close()
+
+            self.assertEqual(
+                len(
+                    {
+                        value
+                        for value in server.allowed_ui_authorities
+                        if value == "dragonsniff.home.arpa:8443"
+                    }
+                ),
+                1,
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_malformed_or_wildcard_ui_authority_is_rejected(self) -> None:
+        for authority in (
+            "",
+            "*",
+            "0.0.0.0:*",
+            "http://192.0.2.10:8766",
+            "192.0.2.10:not-a-port",
+            "example.test:",
+            "user@example.test:8766",
+            "example.test:70000",
+            "example.test/path",
+            "bad_host.example:8766",
+        ):
+            with self.subTest(authority=authority):
+                with self.assertRaisesRegex(ValueError, "invalid allowed UI authority"):
+                    normalize_ui_authority(authority)
+
+    def test_configured_authority_post_origin_must_match_host(self) -> None:
+        authority = "192.0.2.10:8766"
+        server = DragonSniffServer(
+            ("127.0.0.1", 0), allowed_ui_authorities=(authority,)
+        )
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            def post(origin: str | None) -> int:
+                connection = HTTPConnection(
+                    "127.0.0.1", server.server_port, timeout=2
+                )
+                headers = {"Host": authority, "Content-Type": "application/json"}
+                if origin is not None:
+                    headers["Origin"] = origin
+                connection.request(
+                    "POST", "/local/v1/session/stop", b"{}", headers
+                )
+                response = connection.getresponse()
+                status = response.status
+                response.read()
+                connection.close()
+                return status
+
+            self.assertEqual(post(f"http://{authority}"), 200)
+            self.assertEqual(post(f"https://{authority}"), 200)
+            self.assertEqual(post(None), 200)
+            self.assertEqual(post("http://192.0.2.10:8765"), 403)
+            self.assertEqual(post("http://attacker.example:8766"), 403)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
     def test_health_endpoint_does_not_require_a_device_session(self) -> None:
         with LocalServerFixture() as local:
             status, body, content_type = local.request("GET", "/healthz")
@@ -111,8 +216,11 @@ class ServerTests(TestCase):
             self.assertEqual(status, 200)
             self.assertEqual(json.loads(body)["session_state"], "idle")
 
-    def test_missing_automation_exports_return_not_found(self) -> None:
+    def test_missing_current_and_automation_exports_return_not_found(self) -> None:
         with LocalServerFixture() as local:
+            session_status, session_body, _ = local.request(
+                "GET", "/local/v1/session/export"
+            )
             capture_status, capture_body, _ = local.request(
                 "GET", "/local/v1/capture/export"
             )
@@ -120,6 +228,10 @@ class ServerTests(TestCase):
                 "GET", "/local/v1/churn/export"
             )
 
+        self.assertEqual(session_status, 404)
+        self.assertEqual(
+            json.loads(session_body), {"error": "session_evidence_not_available"}
+        )
         self.assertEqual(capture_status, 404)
         self.assertEqual(
             json.loads(capture_body), {"error": "capture_evidence_not_available"}
@@ -206,6 +318,10 @@ class ServerTests(TestCase):
         self.assertIn("Watch the dragon breathe", html)
         self.assertIn("Start passive capture", html)
         self.assertIn("Download thermal capture JSONL", html)
+        self.assertIn(
+            '<a id="exportLink" class="button-link" download aria-disabled="true">No current evidence</a>',
+            html,
+        )
         self.assertIn('id="captureProfile"', html)
         self.assertIn('id="captureBudget"', html)
         self.assertIn('id="thermal-heading">Thermals', html)

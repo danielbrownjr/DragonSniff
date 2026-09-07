@@ -149,6 +149,16 @@
     };
   }
 
+  function currentEvidenceControl(snapshot) {
+    const records = snapshot?.recorder?.records;
+    const available = Number.isSafeInteger(records) && records > 0;
+    return {
+      available,
+      label: available ? "Download current session JSONL" : "No current evidence",
+      href: available ? "/local/v1/session/export" : null,
+    };
+  }
+
   function resolvePage(candidate, labRoute = false) {
     if (labRoute) return "lab";
     return PUBLIC_PAGES.includes(candidate) ? candidate : "dashboard";
@@ -188,6 +198,7 @@
     captureProfileConfiguration,
     captureRecordEstimate,
     captureBudgetState,
+    currentEvidenceControl,
     resolvePage,
     thermalSnapshot,
     MAX_ESTIMATED_RECORDS,

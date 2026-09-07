@@ -72,7 +72,7 @@ Every observation, Thermal capture, and Churn run is then appended to its own JS
 
 History status distinguishes how a run ended: `completed` reached its normal boundary, `cancelled` received an orderly stop, `interrupted` was recovered after the process disappeared without a terminal transition, and `failed` records a known operational or persistence error. Recovery preserves every complete JSONL record—including a final request with no response—and never invents or deletes evidence to make a timeline appear complete.
 
-Use `--retention-sessions` and `--retention-bytes` to change those bounds. `DRAGONSNIFF_DATA_DIR`, `DRAGONSNIFF_ALLOWED_TARGETS`, `DRAGONSNIFF_REQUIRE_ALLOWLIST`, `DRAGONSNIFF_RETENTION_SESSIONS`, and `DRAGONSNIFF_RETENTION_BYTES` provide the equivalent environment configuration. Comma-separate multiple environment allowlist entries.
+Use `--retention-sessions` and `--retention-bytes` to change those bounds. `DRAGONSNIFF_DATA_DIR`, `DRAGONSNIFF_ALLOWED_TARGETS`, `DRAGONSNIFF_ALLOWED_HOSTS`, `DRAGONSNIFF_REQUIRE_ALLOWLIST`, `DRAGONSNIFF_RETENTION_SESSIONS`, and `DRAGONSNIFF_RETENTION_BYTES` provide the equivalent environment configuration. Comma-separate multiple environment allowlist entries. `--allow-host` may be repeated to add exact browser authorities; loopback on the listening port remains accepted by default.
 
 `GET /healthz` reports whether the local web service is responsive and does not require device connectivity.
 
@@ -104,19 +104,9 @@ Use `docker compose down` to remove the container while retaining the named volu
 
 ### Portainer / prebuilt image
 
-Main-branch images are published as `ghcr.io/danielbrownjr/dragonsniff:latest`
-and as an immutable `sha-<full-commit-sha>` tag. A Portainer stack can use the
-prebuilt image without cloning this repository or building on the NAS. Preserve
-the same runtime hardening and `/data` persistence boundary used by
-`compose.yaml`; replace its `build: .` line with, for example:
+Main-branch images are published publicly as `ghcr.io/danielbrownjr/dragonsniff:latest` and as an immutable `sha-<full-commit-sha>` tag. `latest` is convenient for routine upgrades; the SHA tag gives a reproducible deployment and rollback point. Portainer should use `image:`, not a remote `build:` context, so neither Git nor a local image build is required on the NAS.
 
-```yaml
-image: ghcr.io/danielbrownjr/dragonsniff:latest
-```
-
-Use the full `sha-...` tag instead of `latest` when a deployment must remain
-pinned to one verified build. Private GHCR packages require corresponding
-registry credentials in Portainer; public packages can be pulled directly.
+See the [direct trusted-LAN Portainer recipe](docs/portainer.md) for a hardened one-service stack with persistent evidence. It supports a configurable external host port and does not require a proxy to rewrite `Host` or `Origin` headers. The package is public, so do not configure a Portainer registry token solely to pull DragonSniff.
 
 ## Concepts
 
@@ -129,7 +119,7 @@ Only one operating mode is active at a time. The UI identifies the active mode, 
 
 ## Exporting evidence
 
-Use **Bag evidence as JSONL** for the active session. Thermal and Churn provide run-specific downloads once their evidence exists. JSONL records retain timestamps, request identities, raw response bodies, parsed JSON when valid, SSE lifecycle events, and cleanup outcomes.
+The dashboard offers **Download current session JSONL** only while the current session owns recorded evidence; otherwise it says **No current evidence**. Thermal and Churn provide run-specific downloads once their evidence exists. **History** is the durable, authoritative source for prior persisted sessions. JSONL records retain timestamps, request identities, raw response bodies, parsed JSON when valid, SSE lifecycle events, and cleanup outcomes.
 
 Downloads use stable names that identify their ownership: `dragonsniff-session.jsonl` for the active session, `dragonsniff-thermal-capture.jsonl` for a retained Thermal run, and `dragonsniff-sse-churn.jsonl` for a retained Churn run.
 
@@ -142,6 +132,7 @@ The active-run downloads remain available. With persistent storage enabled, **Hi
 - [Bounded SSE churn runner](docs/churn-runner.md)
 - [Dragon API findings](docs/dragon-api-findings.md)
 - [Hardware validation](docs/hardware-validation.md)
+- [Portainer trusted-LAN deployment](docs/portainer.md)
 - [Server and Docker roadmap](docs/server-docker-roadmap.md)
 
 ## Development

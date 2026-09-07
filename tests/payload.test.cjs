@@ -13,10 +13,41 @@ const {
   churnSummaryText,
   formatBytes,
   historyStorageSummary,
+  currentEvidenceControl,
   payloadText,
   resolvePage,
   thermalSnapshot,
 } = require("../src/dragonsniff/web/payload.js");
+
+test("current evidence control follows authoritative recorder records", () => {
+  const unavailable = {
+    available: false,
+    label: "No current evidence",
+    href: null,
+  };
+  const available = {
+    available: true,
+    label: "Download current session JSONL",
+    href: "/local/v1/session/export",
+  };
+  assert.deepEqual(currentEvidenceControl(undefined), unavailable);
+  assert.deepEqual(currentEvidenceControl({
+    active_mode: "idle",
+    recorder: {records: 0},
+  }), unavailable);
+  assert.deepEqual(currentEvidenceControl({
+    active_mode: "observation",
+    recorder: {records: 1},
+  }), available);
+  assert.deepEqual(currentEvidenceControl({
+    active_mode: "idle",
+    recorder: {records: 0},
+  }), unavailable);
+  assert.deepEqual(
+    currentEvidenceControl({recorder: {records: "1"}}),
+    unavailable,
+  );
+});
 
 test("byte formatting uses deterministic binary units", () => {
   assert.equal(formatBytes(0), "0 B");
