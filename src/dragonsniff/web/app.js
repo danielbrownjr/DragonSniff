@@ -539,6 +539,12 @@ function render(snapshot) {
   document.querySelector("#reconnectButton").disabled = !active || stopping;
   document.querySelector("#stopEventsButton").disabled = !streamActive;
   document.querySelector("#stopButton").disabled = !active || stopping;
+  const exportLink = document.querySelector("#exportLink");
+  const evidence = payloadTools.currentEvidenceControl(snapshot);
+  exportLink.textContent = evidence.label;
+  exportLink.setAttribute("aria-disabled", String(!evidence.available));
+  if (evidence.available) exportLink.href = evidence.href;
+  else exportLink.removeAttribute("href");
   renderChurn(snapshot);
   renderCapture(snapshot);
   if (snapshot.automation_return?.error) {

@@ -282,6 +282,7 @@ button:focus-visible, .button-link:focus-visible, input:focus-visible, select:fo
   outline-offset: 2px;
 }
 button:disabled { cursor: not-allowed; opacity: .4; }
+.button-link[aria-disabled="true"] { cursor: not-allowed; opacity: .4; pointer-events: none; }
 .notice {
   min-height: 1.3em;
   margin-bottom: 0;
