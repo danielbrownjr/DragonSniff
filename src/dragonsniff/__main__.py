@@ -9,7 +9,7 @@ import signal
 from threading import Event, Thread
 from types import FrameType
 
-from .server import DragonSniffServer, SessionManager
+from .server import DragonSniffServer, SessionManager, normalize_ui_authority
 from .storage import (
     DEFAULT_RETENTION_BYTES,
     DEFAULT_RETENTION_SESSIONS,
@@ -49,6 +49,30 @@ def _environment_targets() -> list[str]:
         for value in os.environ.get("DRAGONSNIFF_ALLOWED_TARGETS", "").split(",")
         if value.strip()
     ]
+
+
+def _environment_hosts() -> list[str]:
+    try:
+        return [
+            normalize_ui_authority(value)
+            for value in os.environ.get("DRAGONSNIFF_ALLOWED_HOSTS", "").split(",")
+            if value.strip()
+        ]
+    except ValueError as exc:
+        raise SystemExit(f"invalid DRAGONSNIFF_ALLOWED_HOSTS: {exc}") from exc
+
+
+def _allowed_host(value: str) -> str:
+    try:
+        return normalize_ui_authority(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def _listening_message(bind: str, port: int) -> str:
+    if bind == "0.0.0.0":
+        return f"DragonSniff is listening on all interfaces at port {port}."
+    return f"DragonSniff is listening at http://{bind}:{port}"
 
 
 def parser() -> argparse.ArgumentParser:
@@ -101,6 +125,15 @@ def parser() -> argparse.ArgumentParser:
         action="append",
         default=_environment_targets(),
         help="permitted Dragon target; may be repeated",
+    )
+    value.add_argument(
+        "--allow-host",
+        action="append",
+        type=_allowed_host,
+        default=_environment_hosts(),
+        help=(
+            "additional exact browser Host authority (host[:port]); may be repeated"
+        ),
     )
     value.add_argument(
         "--require-allowlist",
@@ -158,6 +191,7 @@ def main() -> int:
         (args.bind, args.port),
         manager,
         allow_wildcard_bind=args.bind == "0.0.0.0",
+        allowed_ui_authorities=args.allow_host,
     )
     if args.target:
         try:
@@ -165,8 +199,9 @@ def main() -> int:
         except TargetValidationError as exc:
             server.server_close()
             raise SystemExit(str(exc)) from exc
-    display_host = "127.0.0.1" if args.bind == "0.0.0.0" else args.bind
-    print(f"DragonSniff is listening at http://{display_host}:{server.server_port}")
+    print(_listening_message(args.bind, server.server_port))
+    if args.bind == "0.0.0.0":
+        print("Container/network exposure is controlled by the host port mapping.")
     print("Press Ctrl+C to stop. No device mutation routes are available.")
     _serve(server)
     return 0

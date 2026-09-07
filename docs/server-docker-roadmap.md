@@ -7,7 +7,7 @@ DragonSniff already separates its browser UI from device communication, serves p
 - One Python process serves the UI and local JSON actions.
 - The default listener is `127.0.0.1:8765`.
 - `--bind`, `--port`, and `--log-level` have matching `DRAGONSNIFF_*` environment variables.
-- `--bind 0.0.0.0` is an explicit container-preparation mode; browser Host validation remains limited to `127.0.0.1` and `localhost`.
+- `--bind 0.0.0.0` is an explicit container mode; browser Host validation remains limited to loopback unless exact additional authorities are configured.
 - `GET /healthz` reports local service availability without requiring a Dragon device.
 - SIGINT and SIGTERM run the existing bounded session cleanup before server close.
 - Static assets resolve from the installed package rather than the current directory.
@@ -52,7 +52,7 @@ The first supported deployment remains host-local:
 browser -> 127.0.0.1:8765 on host -> container 0.0.0.0:8765 -> authorized Dragon device
 ```
 
-The image listens on `0.0.0.0` inside its container. The Compose mapping is `127.0.0.1:8765:8765`, not a LAN-wide publish. Running the image with a generic `docker run -p 8765:8765 ...` may publish it beyond loopback depending on Docker and host configuration. Host validation is a browser/network backstop, not authentication. LAN or multi-user access requires a separate authentication, authorization, CSRF, and threat-model decision.
+The image listens on `0.0.0.0` inside its container. The Compose mapping is `127.0.0.1:8765:8765`, not a LAN-wide publish. Running the image with a generic `docker run -p 8765:8765 ...` may publish it beyond loopback depending on Docker and host configuration. Exact trusted-LAN browser authorities can be opted in with `DRAGONSNIFF_ALLOWED_HOSTS`; no authority is inferred from the wildcard bind. Host validation is a browser/network backstop, not authentication, and the service must not be exposed to an untrusted network.
 
 The mounted `/data` path must be writable by the image's non-root user. A pre-existing bind mount or named volume created with different ownership may require an operator to correct that ownership before starting the service.
 
