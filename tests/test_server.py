@@ -327,6 +327,10 @@ class ServerTests(TestCase):
         history = json.loads(history_body)
         self.assertTrue(history["persistent"])
         self.assertEqual(history["sessions"][0]["session_id"], session_id)
+        self.assertEqual(history["storage"]["retained_sessions"], 1)
+        self.assertEqual(history["storage"]["valid_sessions"], 1)
+        self.assertEqual(history["storage"]["invalid_sessions"], 0)
+        self.assertGreater(history["storage"]["retained_bytes"], 0)
         self.assertEqual(detail_status, 200)
         self.assertEqual(json.loads(detail_body)["status"], "completed")
         self.assertEqual(export_status, 200)
@@ -397,7 +401,8 @@ class ServerTests(TestCase):
             metadata["kind"] = "capture\r\nX-Injected: yes"
             metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
 
-            manager = SessionManager(store=SessionStore(temporary))
+            with self.assertLogs("dragonsniff.storage", level="WARNING"):
+                manager = SessionManager(store=SessionStore(temporary))
             with LocalServerFixture(manager) as local:
                 status, body, _ = local.download(
                     f"/local/v1/history/{recorder.session_id}/export"

@@ -29,6 +29,8 @@ Persistent mode uses `<data-dir>/sessions/<session-id>/metadata.json` plus `evid
 
 Session/evidence creation and atomic metadata replacement also flush their containing directories on platforms that expose directory `fsync`. Windows does not provide that operation through Python's portable file-descriptor API, so DragonSniff retains atomic replace and file flush guarantees there without claiming a directory-flush guarantee. Retention leases active downloads and treats deletion failure as retryable housekeeping rather than failing a live run.
 
+A canonical session directory whose metadata is malformed, unreadable, or from an unsupported format version is invalid for normal History and download semantics. It is not hidden from storage accounting: its logical file bytes and one session-count slot remain in the retention budget and in the History API's storage summary. Invalid sessions are eligible for retention removal, using directory modification time only as a fallback ordering value rather than treating it as a trustworthy session creation time.
+
 ## Implemented Docker-service foundation
 
 1. **Incremental evidence persistence.** Records are append-only JSONL and remain bounded in live memory.
