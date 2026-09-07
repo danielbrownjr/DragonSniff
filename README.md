@@ -70,7 +70,7 @@ dragonsniff --data-dir ./dragonsniff-data --allow-target dragonbreath.local --re
 
 Every observation, Thermal capture, and Churn run is then appended to its own JSONL file as records arrive. Each complete JSONL record is flushed before it becomes visible in the live view. Metadata is cached and checkpointed every 64 records, then flushed synchronously on terminal transitions. After an ungraceful stop, startup discards and quarantines only an incomplete final JSONL record, derives authoritative counters from the evidence stream, and marks a previously active session as `interrupted`; it never silently resumes device work. A known persistence failure is instead recorded as `failed` when the metadata filesystem still permits that terminal write. Storage defaults to at most 500 sessions and 256 MiB, with oldest finished sessions removed first. Active and currently downloading sessions are never removed by retention. Valid-session storage totals use cached actual file sizes updated after durable writes, plus any recovered partial evidence; one `fstat()` after the existing per-record `fsync()` keeps active-session accounting exact, and measured end-to-end History and retention paths remain substantially faster. New Windows evidence files use binary descriptors, while startup recognizes the exact size of legacy CRLF evidence. Canonically named session directories with corrupt, unreadable, or unsupported metadata stay out of normal History results but remain included in storage totals and retention through filesystem sizing; warnings identify them, and their directory modification time is used only as a fallback for oldest-first removal. If the top-level session storage cannot be traversed, History returns a controlled JSON error instead of an empty result or a dropped connection.
 
-Use `--retention-sessions` and `--retention-bytes` to change those bounds. `DRAGONSNIFF_DATA_DIR`, `DRAGONSNIFF_ALLOWED_TARGETS`, `DRAGONSNIFF_REQUIRE_ALLOWLIST`, `DRAGONSNIFF_RETENTION_SESSIONS`, and `DRAGONSNIFF_RETENTION_BYTES` provide the equivalent environment configuration. Comma-separate multiple environment allowlist entries.
+Use `--retention-sessions` and `--retention-bytes` to change those bounds. `DRAGONSNIFF_DATA_DIR`, `DRAGONSNIFF_ALLOWED_TARGETS`, `DRAGONSNIFF_ALLOWED_HOSTS`, `DRAGONSNIFF_REQUIRE_ALLOWLIST`, `DRAGONSNIFF_RETENTION_SESSIONS`, and `DRAGONSNIFF_RETENTION_BYTES` provide the equivalent environment configuration. Comma-separate multiple environment allowlist entries. `--allow-host` may be repeated to add exact browser authorities; loopback on the listening port remains accepted by default.
 
 `GET /healthz` reports whether the local web service is responsive and does not require device connectivity.
 
@@ -102,19 +102,9 @@ Use `docker compose down` to remove the container while retaining the named volu
 
 ### Portainer / prebuilt image
 
-Main-branch images are published as `ghcr.io/danielbrownjr/dragonsniff:latest`
-and as an immutable `sha-<full-commit-sha>` tag. A Portainer stack can use the
-prebuilt image without cloning this repository or building on the NAS. Preserve
-the same runtime hardening and `/data` persistence boundary used by
-`compose.yaml`; replace its `build: .` line with, for example:
+Main-branch images are published publicly as `ghcr.io/danielbrownjr/dragonsniff:latest` and as an immutable `sha-<full-commit-sha>` tag. `latest` is convenient for routine upgrades; the SHA tag gives a reproducible deployment and rollback point. Portainer should use `image:`, not a remote `build:` context, so neither Git nor a local image build is required on the NAS.
 
-```yaml
-image: ghcr.io/danielbrownjr/dragonsniff:latest
-```
-
-Use the full `sha-...` tag instead of `latest` when a deployment must remain
-pinned to one verified build. Private GHCR packages require corresponding
-registry credentials in Portainer; public packages can be pulled directly.
+See the [direct trusted-LAN Portainer recipe](docs/portainer.md) for a hardened one-service stack with persistent evidence. It supports a configurable external host port and does not require a proxy to rewrite `Host` or `Origin` headers. The package is public, so do not configure a Portainer registry token solely to pull DragonSniff.
 
 ## Concepts
 
@@ -140,6 +130,7 @@ The active-run downloads remain available. With persistent storage enabled, **Hi
 - [Bounded SSE churn runner](docs/churn-runner.md)
 - [Dragon API findings](docs/dragon-api-findings.md)
 - [Hardware validation](docs/hardware-validation.md)
+- [Portainer trusted-LAN deployment](docs/portainer.md)
 - [Server and Docker roadmap](docs/server-docker-roadmap.md)
 
 ## Development
