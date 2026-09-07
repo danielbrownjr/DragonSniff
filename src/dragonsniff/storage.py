@@ -166,7 +166,10 @@ class SessionStore:
             evidence_path = self._evidence_path(session_id)
             descriptor = os.open(
                 evidence_path,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | getattr(os, "O_BINARY", 0),
                 0o600,
             )
             try:
@@ -177,7 +180,28 @@ class SessionStore:
             self._metadata[session_id] = metadata
             self._evidence_file_bytes[session_id] = 0
             self._pending_checkpoints[session_id] = 0
-            self._write_metadata_locked(session_id, metadata)
+            try:
+                self._write_metadata_locked(session_id, metadata)
+            except Exception:
+                self._metadata.pop(session_id, None)
+                self._evidence_file_bytes.pop(session_id, None)
+                self._metadata_file_bytes.pop(session_id, None)
+                self._pending_checkpoints.pop(session_id, None)
+                try:
+                    shutil.rmtree(session_dir)
+                except OSError:
+                    LOGGER.exception(
+                        "could not remove partially created session %s", session_id
+                    )
+                else:
+                    try:
+                        self._fsync_directory(self.sessions_dir)
+                    except OSError:
+                        LOGGER.exception(
+                            "could not flush partial-session cleanup for %s",
+                            session_id,
+                        )
+                raise
         return PersistentSessionRecorder(self, session_id, max_records)
 
     def append(self, session_id: str, record: dict[str, Any]) -> None:
@@ -191,7 +215,7 @@ class SessionStore:
             evidence_path = self._evidence_path(session_id)
             if evidence_path.is_symlink():
                 raise OSError("persistent evidence path is a symbolic link")
-            flags = os.O_WRONLY | os.O_APPEND
+            flags = os.O_WRONLY | os.O_APPEND | getattr(os, "O_BINARY", 0)
             if hasattr(os, "O_NOFOLLOW"):
                 flags |= os.O_NOFOLLOW
             descriptor = os.open(evidence_path, flags)
@@ -418,10 +442,32 @@ class SessionStore:
         """Return exact application-owned bytes without walking a valid session."""
         session_id = metadata["session_id"]
         return (
-            self._evidence_file_bytes[session_id]
-            + self._metadata_file_bytes[session_id]
+            self._cached_file_size_locked(
+                self._evidence_file_bytes,
+                session_id,
+                self._evidence_path(session_id),
+            )
+            + self._cached_file_size_locked(
+                self._metadata_file_bytes,
+                session_id,
+                self._session_dir(session_id) / "metadata.json",
+            )
             + metadata.get("recovered_partial_bytes", 0)
         )
+
+    @staticmethod
+    def _cached_file_size_locked(
+        cache: dict[str, int], session_id: str, path: Path
+    ) -> int:
+        cached = cache.get(session_id)
+        if cached is not None:
+            return cached
+        try:
+            size = path.stat().st_size
+        except FileNotFoundError:
+            size = 0
+        cache[session_id] = size
+        return size
 
     @staticmethod
     def _evidence_bytes_match_metadata(
@@ -430,8 +476,10 @@ class SessionStore:
         logical_bytes = metadata["bytes"]
         if evidence_file_bytes == logical_bytes:
             return True
-        # Existing Windows files use CRLF because the low-level descriptors were
-        # opened without O_BINARY; each JSONL record contributes one extra byte.
+        # Before binary evidence opens were introduced, Windows text-mode
+        # descriptors expanded each record's LF to CRLF. Tolerating exactly one
+        # extra byte per record avoids rescanning those legacy stores, at the
+        # cost of accepting another same-sized modification until a later scan.
         return os.name == "nt" and evidence_file_bytes == (
             logical_bytes + metadata["records"]
         )
