@@ -194,6 +194,76 @@ class SessionStoreTests(TestCase):
                 len(evidence_bytes(recovered, recorder.session_id).splitlines()), 1
             )
 
+    def test_recovery_preserves_complete_unmatched_request_as_evidence(self) -> None:
+        with TemporaryDirectory() as temporary:
+            store = SessionStore(temporary)
+            recorder = store.create_recorder("capture", "http://dragon.local", 10)
+            recorder.append("capture_run_started", run_id="run")
+            recorder.append(
+                "http_request",
+                request_id="request-60",
+                method="GET",
+                path="/api/v2/state",
+            )
+            before = evidence_bytes(store, recorder.session_id)
+            self.assertIsNotNone(before)
+
+            recovered = SessionStore(temporary)
+            after = evidence_bytes(recovered, recorder.session_id)
+            metadata = recovered.get_session(recorder.session_id)
+            session_path = Path(temporary) / "sessions" / recorder.session_id
+
+            self.assertEqual(after, before)
+            records = [json.loads(line) for line in after.splitlines()]
+            self.assertEqual(records[-1]["kind"], "http_request")
+            self.assertEqual(records[-1]["request_id"], "request-60")
+            self.assertFalse(
+                any(record.get("request_id") == "request-60" for record in records[:-1])
+            )
+            self.assertEqual(metadata["status"], "interrupted")
+            self.assertEqual(metadata["records"], len(records))
+            self.assertEqual(metadata["bytes"], len(after))
+            self.assertFalse((session_path / "evidence.partial").exists())
+            self.assertEqual(
+                recovered.storage_summary()["valid_bytes"],
+                directory_bytes(session_path),
+            )
+
+    def test_session_kinds_and_terminal_statuses_coexist_after_restart(self) -> None:
+        cases = (
+            ("observation", "session_stopped", "completed"),
+            ("capture", "capture_run_cancelled", "cancelled"),
+            ("churn", "churn_run_failed", "failed"),
+        )
+        with TemporaryDirectory() as temporary:
+            store = SessionStore(temporary)
+            expected = {}
+            for kind, terminal, status in cases:
+                recorder = store.create_recorder(kind, "http://dragon.local", 10)
+                recorder.append(terminal)
+                expected[recorder.session_id] = (kind, status)
+            interrupted = store.create_recorder(
+                "capture", "http://dragon.local", 10
+            )
+            interrupted.append("http_request", request_id="request-1")
+            expected[interrupted.session_id] = ("capture", "interrupted")
+
+            recovered = SessionStore(temporary)
+            sessions = {
+                session["session_id"]: (session["kind"], session["status"])
+                for session in recovered.list_sessions()
+            }
+
+            self.assertEqual(sessions, expected)
+            self.assertEqual(recovered.storage_summary()["valid_sessions"], 4)
+            for session_id in expected:
+                evidence = evidence_bytes(recovered, session_id)
+                self.assertIsNotNone(evidence)
+                self.assertEqual(
+                    recovered.get_session(session_id)["records"],
+                    len(evidence.splitlines()),
+                )
+
     def test_recovery_reconciles_metadata_after_evidence_only_crash_window(self) -> None:
         with TemporaryDirectory() as temporary:
             store = SessionStore(temporary)
