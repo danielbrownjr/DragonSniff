@@ -120,6 +120,8 @@ class SessionStore:
         self.retention_sessions = retention_sessions
         self._lock = Lock()
         self._metadata: dict[str, dict[str, Any]] = {}
+        self._evidence_file_bytes: dict[str, int] = {}
+        self._metadata_file_bytes: dict[str, int] = {}
         self._invalid_sessions: dict[str, str] = {}
         self._pending_checkpoints: dict[str, int] = {}
         self._download_leases: dict[str, int] = {}
@@ -173,6 +175,7 @@ class SessionStore:
                 os.close(descriptor)
             self._fsync_directory(session_dir)
             self._metadata[session_id] = metadata
+            self._evidence_file_bytes[session_id] = 0
             self._pending_checkpoints[session_id] = 0
             self._write_metadata_locked(session_id, metadata)
         return PersistentSessionRecorder(self, session_id, max_records)
@@ -195,8 +198,10 @@ class SessionStore:
             try:
                 self._write_all(descriptor, encoded)
                 os.fsync(descriptor)
+                evidence_file_bytes = os.fstat(descriptor).st_size
             finally:
                 os.close(descriptor)
+            self._evidence_file_bytes[session_id] = evidence_file_bytes
             metadata["records"] += 1
             metadata["bytes"] += len(encoded)
             metadata["updated_at"] = _timestamp()
@@ -326,6 +331,8 @@ class SessionStore:
                     )
                     break
                 self._metadata.pop(session_id, None)
+                self._evidence_file_bytes.pop(session_id, None)
+                self._metadata_file_bytes.pop(session_id, None)
                 self._invalid_sessions.pop(session_id, None)
                 self._pending_checkpoints.pop(session_id, None)
                 total -= item["bytes"]
@@ -340,6 +347,7 @@ class SessionStore:
                 continue
             try:
                 metadata = self._read_metadata_file_locked(path.name)
+                metadata_file_bytes = (path / "metadata.json").stat().st_size
             except (
                 OSError,
                 json.JSONDecodeError,
@@ -350,8 +358,15 @@ class SessionStore:
                 self._register_invalid_locked(path.name, exc)
                 continue
             session_id = metadata["session_id"]
+            self._metadata_file_bytes[session_id] = metadata_file_bytes
             evidence_changed = self._repair_partial_tail_locked(session_id, metadata)
-            if metadata["status"] == "active" or evidence_changed:
+            evidence_bytes = self._evidence_size_locked(session_id)
+            self._evidence_file_bytes[session_id] = evidence_bytes
+            if (
+                metadata["status"] == "active"
+                or evidence_changed
+                or not self._evidence_bytes_match_metadata(metadata, evidence_bytes)
+            ):
                 records, size = self._scan_evidence_locked(session_id)
                 metadata_changed = (
                     metadata.get("records") != records
@@ -378,9 +393,7 @@ class SessionStore:
         objects = [
             {
                 "session_id": metadata["session_id"],
-                "bytes": self._directory_size(
-                    self._session_dir(metadata["session_id"])
-                ),
+                "bytes": self._valid_storage_bytes_locked(metadata),
                 "order": metadata["created_at"],
                 "valid": True,
                 "active": metadata["status"] == "active",
@@ -400,6 +413,28 @@ class SessionStore:
                     }
                 )
         return objects
+
+    def _valid_storage_bytes_locked(self, metadata: dict[str, Any]) -> int:
+        """Return exact application-owned bytes without walking a valid session."""
+        session_id = metadata["session_id"]
+        return (
+            self._evidence_file_bytes[session_id]
+            + self._metadata_file_bytes[session_id]
+            + metadata.get("recovered_partial_bytes", 0)
+        )
+
+    @staticmethod
+    def _evidence_bytes_match_metadata(
+        metadata: dict[str, Any], evidence_file_bytes: int
+    ) -> bool:
+        logical_bytes = metadata["bytes"]
+        if evidence_file_bytes == logical_bytes:
+            return True
+        # Existing Windows files use CRLF because the low-level descriptors were
+        # opened without O_BINARY; each JSONL record contributes one extra byte.
+        return os.name == "nt" and evidence_file_bytes == (
+            logical_bytes + metadata["records"]
+        )
 
     def _discover_invalid_sessions_locked(self) -> None:
         present: set[str] = set()
@@ -519,7 +554,16 @@ class SessionStore:
             raise ValueError("invalid session metadata")
         if not isinstance(value.get("bytes"), int) or value["bytes"] < 0:
             raise ValueError("invalid session metadata")
+        recovered = value.get("recovered_partial_bytes", 0)
+        if not isinstance(recovered, int) or recovered < 0:
+            raise ValueError("invalid recovered partial byte count")
         return value
+
+    def _evidence_size_locked(self, session_id: str) -> int:
+        try:
+            return self._evidence_path(session_id).stat().st_size
+        except FileNotFoundError:
+            return 0
 
     def _metadata_for_locked(self, session_id: object) -> dict[str, Any]:
         if not is_valid_session_id(session_id):
@@ -536,6 +580,7 @@ class SessionStore:
         encoded = (json.dumps(metadata, ensure_ascii=False, indent=2) + "\n").encode(
             "utf-8"
         )
+        metadata_file_bytes = 0
         try:
             descriptor = os.open(
                 temporary,
@@ -545,10 +590,12 @@ class SessionStore:
             try:
                 self._write_all(descriptor, encoded)
                 os.fsync(descriptor)
+                metadata_file_bytes = os.fstat(descriptor).st_size
             finally:
                 os.close(descriptor)
             os.replace(temporary, path)
             self._fsync_directory(session_dir)
+            self._metadata_file_bytes[session_id] = metadata_file_bytes
         except Exception:
             try:
                 temporary.unlink(missing_ok=True)
