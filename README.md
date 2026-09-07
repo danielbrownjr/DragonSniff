@@ -100,6 +100,22 @@ docker compose start
 
 Use `docker compose down` to remove the container while retaining the named volume. Adding `--volumes` intentionally removes stored evidence.
 
+### Portainer / prebuilt image
+
+Main-branch images are published as `ghcr.io/danielbrownjr/dragonsniff:latest`
+and as an immutable `sha-<full-commit-sha>` tag. A Portainer stack can use the
+prebuilt image without cloning this repository or building on the NAS. Preserve
+the same runtime hardening and `/data` persistence boundary used by
+`compose.yaml`; replace its `build: .` line with, for example:
+
+```yaml
+image: ghcr.io/danielbrownjr/dragonsniff:latest
+```
+
+Use the full `sha-...` tag instead of `latest` when a deployment must remain
+pinned to one verified build. Private GHCR packages require corresponding
+registry credentials in Portainer; public packages can be pulled directly.
+
 ## Concepts
 
 - **Observer:** fetches the three JSON endpoints and holds one SSE stream. Stop/reconnect controls affect the stream without silently replacing the session.
