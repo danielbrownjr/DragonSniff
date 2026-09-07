@@ -25,7 +25,9 @@ When `--data-dir` is configured, DragonSniff incrementally appends observation, 
 | Logs | Standard output/error | Container log stream |
 | Static assets | Installed package | Read-only image content |
 
-Persistent mode uses `<data-dir>/sessions/<session-id>/metadata.json` plus `evidence.jsonl`. Metadata replacement is atomic and each JSONL record is appended and flushed before the live recorder reports success. A partial final record is quarantined as `evidence.partial` during recovery.
+Persistent mode uses `<data-dir>/sessions/<session-id>/metadata.json` plus `evidence.jsonl`. Each JSONL record is appended and `fsync`ed before the live recorder reports success; that valid JSONL prefix is the authoritative evidence. Metadata is cached, checkpointed every 64 records, and synchronously flushed for terminal state. Startup streams active evidence to reconcile counters and uses bounded reverse reads to find and quarantine an incomplete final record as `evidence.partial`. A known append failure is durably classified as `failed` when the filesystem still permits the terminal metadata write; if no further write is possible, the valid JSONL prefix remains recoverable but the last on-disk metadata state is necessarily the limit of what can be guaranteed.
+
+Session/evidence creation and atomic metadata replacement also flush their containing directories on platforms that expose directory `fsync`. Windows does not provide that operation through Python's portable file-descriptor API, so DragonSniff retains atomic replace and file flush guarantees there without claiming a directory-flush guarantee. Retention leases active downloads and treats deletion failure as retryable housekeeping rather than failing a live run.
 
 ## Implemented Docker-service foundation
 
@@ -46,7 +48,9 @@ The first supported deployment remains host-local:
 browser -> 127.0.0.1:8765 on host -> container 0.0.0.0:8765 -> authorized Dragon device
 ```
 
-The Compose mapping should be `127.0.0.1:8765:8765`, not a LAN-wide publish. `0.0.0.0` is for the container namespace only. LAN or multi-user access requires a separate authentication, authorization, CSRF, and threat-model decision.
+The image listens on `0.0.0.0` inside its container. The Compose mapping is `127.0.0.1:8765:8765`, not a LAN-wide publish. Running the image with a generic `docker run -p 8765:8765 ...` may publish it beyond loopback depending on Docker and host configuration. Host validation is a browser/network backstop, not authentication. LAN or multi-user access requires a separate authentication, authorization, CSRF, and threat-model decision.
+
+The mounted `/data` path must be writable by the image's non-root user. A pre-existing bind mount or named volume created with different ownership may require an operator to correct that ownership before starting the service.
 
 The service does not enable CORS. Browser actions must retain matching Host and Origin checks, and the application must remain a fixed read-only Dragon client rather than a generic network proxy.
 
@@ -67,7 +71,7 @@ DragonSniff currently talks to Dragons over HTTP(S), not host USB or serial devi
 - A mounted data directory receives incremental evidence and no source-tree writes occur.
 - Capture and churn evidence survives browser closure and container restart.
 - Interrupted runs are marked, retained, and downloadable after restart.
-- SIGTERM completes bounded cleanup and flushes evidence before exit.
+- SIGTERM gives session/worker cleanup one shared 12-second deadline; the supported Compose deployment provides a 20-second grace period to include bounded HTTP handler shutdown.
 - Stop/restart does not corrupt JSONL or silently resume device work.
 - UI/API/session/export tests pass inside and outside the container.
 

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+import logging
 from math import ceil
 from threading import Event, Lock, Thread, current_thread
 import time
@@ -13,6 +15,9 @@ from uuid import uuid4
 from .client import DragonClient
 from .recording import SessionRecorder
 from .target import DeviceTarget
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,7 +282,12 @@ class CaptureRunner:
             details = {"type": type(exc).__name__, "message": str(exc)}
             with self._lock:
                 self._state["failure"] = details
-            self.recorder.append("capture_internal_failure", run_id=self.run_id, **details)
+            try:
+                self.recorder.append(
+                    "capture_internal_failure", run_id=self.run_id, **details
+                )
+            except Exception:
+                self._persist_failure(details)
         finally:
             self._complete(outcome)
 
@@ -333,20 +343,40 @@ class CaptureRunner:
             final = "cancelled" if self._cancel.is_set() else outcome
             self._state["state"] = final
             self._state["cleanup_complete"] = False
+            self._state["end_timestamp"] = datetime.now(timezone.utc).isoformat(
+                timespec="milliseconds"
+            )
             elapsed_ms = self._elapsed_ms()
             self._state["elapsed_ms"] = elapsed_ms
             samples_completed = self._state["samples_completed"]
             fetches_completed = self._state["fetches_completed"]
-        record = self.recorder.append(
-            f"capture_run_{final}",
-            run_id=self.run_id,
-            samples_completed=samples_completed,
-            fetches_completed=fetches_completed,
-            elapsed_ms=elapsed_ms,
-        )
-        with self._lock:
-            self._state["end_timestamp"] = record["timestamp"]
-        self._finish_if_complete()
+        try:
+            record = self.recorder.append(
+                f"capture_run_{final}",
+                run_id=self.run_id,
+                samples_completed=samples_completed,
+                fetches_completed=fetches_completed,
+                elapsed_ms=elapsed_ms,
+            )
+        except Exception as exc:
+            details = {"type": type(exc).__name__, "message": str(exc)}
+            with self._lock:
+                self._state["state"] = "failed"
+                if self._state["failure"] is None:
+                    self._state["failure"] = details
+            self._persist_failure(details)
+        else:
+            with self._lock:
+                self._state["end_timestamp"] = record["timestamp"]
+        finally:
+            self._finish_if_complete()
+
+    def _persist_failure(self, details: dict[str, str]) -> None:
+        reason = f'{details["type"]}: {details["message"]}'
+        try:
+            self.recorder.fail(reason)
+        except Exception:
+            LOGGER.exception("could not persist failed capture status")
 
     def wait_finished(self, timeout: float | None = None) -> bool:
         """Wait until terminal evidence and local cleanup are complete."""

@@ -2,21 +2,22 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 import json
 import logging
 import os
-from pathlib import Path
 from threading import BoundedSemaphore, Event, Lock, Thread, current_thread
-from typing import Any, Iterable
+import time
+from typing import Any, BinaryIO, ContextManager, Iterable
 from urllib.parse import urlsplit
 
 from .capture import CaptureConfig, CaptureRunner
 from .churn import ChurnConfig, ChurnRunner
 from .observer import Observer
 from .recording import SessionRecorder
-from .storage import PersistentSessionRecorder, SessionStore
+from .storage import SessionStore, export_filename, is_valid_session_id
 from .target import DeviceTarget, TargetValidationError, parse_target
 
 
@@ -52,6 +53,8 @@ EXPORT_FILENAMES = {
 
 
 class SessionManager:
+    SHUTDOWN_TIMEOUT_SECONDS = 12.0
+
     def __init__(
         self,
         *,
@@ -103,7 +106,7 @@ class SessionManager:
             try:
                 observer.start()
             except Exception as exc:
-                self._abort_persistent_start(observer.recorder, exc)
+                self._fail_session_start(observer.recorder, exc)
                 raise
             self._automation_generation += 1
             self._observer = observer
@@ -173,7 +176,7 @@ class SessionManager:
             try:
                 churn.start()
             except Exception as exc:
-                self._abort_persistent_start(churn.recorder, exc)
+                self._fail_session_start(churn.recorder, exc)
                 raise
             self._automation_generation += 1
             generation = self._automation_generation
@@ -235,7 +238,7 @@ class SessionManager:
             try:
                 capture.start()
             except Exception as exc:
-                self._abort_persistent_start(capture.recorder, exc)
+                self._fail_session_start(capture.recorder, exc)
                 raise
             self._automation_generation += 1
             generation = self._automation_generation
@@ -321,7 +324,7 @@ class SessionManager:
                         # worker launch atomic with respect to shutdown().
                         observer.start()
                     except Exception as exc:
-                        self._abort_persistent_start(observer.recorder, exc)
+                        self._fail_session_start(observer.recorder, exc)
                         self._resume_error = f"{type(exc).__name__}: {exc}"
                         LOGGER.exception("could not resume observation after %s", kind)
                         return
@@ -336,6 +339,7 @@ class SessionManager:
 
     def shutdown(self) -> None:
         self._shutdown.set()
+        deadline = time.monotonic() + self.SHUTDOWN_TIMEOUT_SECONDS
         with self._transition_lock:
             with self._lock:
                 self._automation_generation += 1
@@ -346,14 +350,14 @@ class SessionManager:
                 capture = self._capture
                 resume_threads = tuple(self._resume_threads)
             if observer is not None:
-                observer.stop(timeout=6.0)
+                observer.stop(timeout=max(0.0, deadline - time.monotonic()))
             if churn is not None:
-                churn.stop(timeout=6.0)
+                churn.stop(timeout=max(0.0, deadline - time.monotonic()))
             if capture is not None:
-                capture.stop(timeout=6.0)
+                capture.stop(timeout=max(0.0, deadline - time.monotonic()))
         for thread in resume_threads:
             if thread is not current_thread():
-                thread.join(timeout=6.0)
+                thread.join(timeout=max(0.0, deadline - time.monotonic()))
 
     def snapshot(self) -> dict[str, Any]:
         observer, churn, capture, active_automation, _, automation_return = (
@@ -423,8 +427,12 @@ class SessionManager:
     def historical_session(self, session_id: str) -> dict[str, Any] | None:
         return self._store.get_session(session_id) if self._store is not None else None
 
-    def historical_evidence_path(self, session_id: str) -> Path | None:
-        return self._store.evidence_path(session_id) if self._store is not None else None
+    def lease_historical_evidence(
+        self, session_id: str
+    ) -> ContextManager[BinaryIO | None]:
+        if self._store is None:
+            return nullcontext(None)
+        return self._store.lease_evidence(session_id)
 
     def _validate_target(self, target: DeviceTarget) -> None:
         if self._allowed_targets and target.base_url not in self._allowed_targets:
@@ -463,12 +471,11 @@ class SessionManager:
         )
 
     @staticmethod
-    def _abort_persistent_start(recorder: SessionRecorder, exc: Exception) -> None:
-        if isinstance(recorder, PersistentSessionRecorder):
-            try:
-                recorder.abort_start(f"{type(exc).__name__}: {exc}")
-            except Exception:
-                LOGGER.exception("could not mark failed persistent session start")
+    def _fail_session_start(recorder: SessionRecorder, exc: Exception) -> None:
+        try:
+            recorder.fail(f"{type(exc).__name__}: {exc}")
+        except Exception:
+            LOGGER.exception("could not mark failed persistent session start")
 
     def _authoritative_context(
         self,
@@ -662,15 +669,11 @@ class DragonSniffHandler(BaseHTTPRequestHandler):
         elif self._history_route(path, "/export") is not None:
             session_id = self._history_route(path, "/export")
             session = self.manager.historical_session(session_id)
-            evidence_path = self.manager.historical_evidence_path(session_id)
-            if session is None or evidence_path is None:
-                self._send_json(404, {"error": "session_not_found"})
-                return
-            created = str(session["created_at"]).replace(":", "").replace("+", "-")
-            filename = (
-                f'dragonsniff-{session["kind"]}-{created}-{session_id[:8]}.jsonl'
-            )
-            self._send_file(evidence_path, filename)
+            with self.manager.lease_historical_evidence(session_id) as evidence:
+                if session is None or evidence is None:
+                    self._send_json(404, {"error": "session_not_found"})
+                    return
+                self._send_file(evidence, export_filename(session))
         elif path == "/local/v1/session/export":
             body = self.manager.export_jsonl().encode("utf-8")
             self._send(
@@ -724,7 +727,7 @@ class DragonSniffHandler(BaseHTTPRequestHandler):
         if not path.startswith(prefix) or not path.endswith(suffix):
             return None
         session_id = path[len(prefix) : len(path) - len(suffix) if suffix else None]
-        return session_id if len(session_id) == 32 and session_id.isalnum() else None
+        return session_id if is_valid_session_id(session_id) else None
 
     def do_POST(self) -> None:
         path = urlsplit(self.path).path
@@ -841,25 +844,19 @@ class DragonSniffHandler(BaseHTTPRequestHandler):
             "application/json; charset=utf-8",
         )
 
-    def _send_file(self, path: Path, filename: str) -> None:
-        try:
-            stream = path.open("rb")
-        except FileNotFoundError:
-            self._send_json(404, {"error": "session_not_found"})
-            return
-        with stream:
-            remaining = os.fstat(stream.fileno()).st_size
-            self.send_response(200)
-            self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
-            self.send_header("Content-Length", str(remaining))
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("Content-Security-Policy", "default-src 'self'; connect-src 'self'")
-            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
-            self.end_headers()
-            while remaining and (chunk := stream.read(min(64 * 1024, remaining))):
-                self.wfile.write(chunk)
-                remaining -= len(chunk)
+    def _send_file(self, stream: BinaryIO, filename: str) -> None:
+        remaining = os.fstat(stream.fileno()).st_size
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+        self.send_header("Content-Length", str(remaining))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Content-Security-Policy", "default-src 'self'; connect-src 'self'")
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.end_headers()
+        while remaining and (chunk := stream.read(min(64 * 1024, remaining))):
+            self.wfile.write(chunk)
+            remaining -= len(chunk)
 
     def _send(
         self,

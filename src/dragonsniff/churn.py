@@ -5,6 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+import logging
 from threading import Event, Lock, Thread, current_thread
 import time
 from typing import Any
@@ -13,6 +14,9 @@ from uuid import uuid4
 from .client import DragonClient
 from .recording import SessionRecorder
 from .target import DeviceTarget
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -286,14 +290,27 @@ class ChurnRunner:
             details = {"type": type(exc).__name__, "message": str(exc)}
             with self._lock:
                 self._state["failure"] = details
-            self.recorder.append("churn_internal_failure", run_id=self.run_id, **details)
+            try:
+                self.recorder.append(
+                    "churn_internal_failure", run_id=self.run_id, **details
+                )
+            except Exception:
+                self._persist_failure(details)
         finally:
             self._cancel_active_stream()
             proposed_terminal = "cancelled" if self._cancel.is_set() else outcome
-            if proposed_terminal in {"completed", "cancelled"}:
+            try:
+                if proposed_terminal in {"completed", "cancelled"}:
+                    with self._lock:
+                        final_cycle = self._state["current_cycle"]
+                    self._run_settlement(cycle=final_cycle)
+            except Exception as exc:
+                proposed_terminal = "failed"
+                details = {"type": type(exc).__name__, "message": str(exc)}
                 with self._lock:
-                    final_cycle = self._state["current_cycle"]
-                self._run_settlement(cycle=final_cycle)
+                    if self._state["failure"] is None:
+                        self._state["failure"] = details
+                self._persist_failure(details)
             terminal = "cancelled" if self._cancel.is_set() else proposed_terminal
             with self._lock:
                 self._pending_terminal = terminal
@@ -706,15 +723,30 @@ class ChurnRunner:
             self._terminal_recorded = True
             result = deepcopy(self._state)
         if record_terminal:
-            self.recorder.append(
-                f"churn_run_{terminal}",
-                run_id=self.run_id,
-                elapsed_ms=result["elapsed_ms"],
-                cleanup_complete=True,
-                summary=self._compact_summary(result),
-            )
+            try:
+                self.recorder.append(
+                    f"churn_run_{terminal}",
+                    run_id=self.run_id,
+                    elapsed_ms=result["elapsed_ms"],
+                    cleanup_complete=True,
+                    summary=self._compact_summary(result),
+                )
+            except Exception as exc:
+                details = {"type": type(exc).__name__, "message": str(exc)}
+                with self._lock:
+                    self._state["state"] = "failed"
+                    if self._state["failure"] is None:
+                        self._state["failure"] = details
+                self._persist_failure(details)
         self._finished.set()
         return True
+
+    def _persist_failure(self, details: dict[str, str]) -> None:
+        reason = f'{details["type"]}: {details["message"]}'
+        try:
+            self.recorder.fail(reason)
+        except Exception:
+            LOGGER.exception("could not persist failed churn status")
 
     def wait_finished(self, timeout: float | None = None) -> bool:
         """Wait until terminal evidence and local cleanup are complete."""

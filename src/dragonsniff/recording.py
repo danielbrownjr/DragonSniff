@@ -45,6 +45,9 @@ class SessionRecorder:
     def _before_record_visible(self, record: dict[str, Any]) -> None:
         """Allow durable recorders to commit a record before exposing it live."""
 
+    def fail(self, reason: str) -> None:
+        """Persist a terminal failure when the recorder has durable storage."""
+
     def snapshot(self) -> list[dict[str, Any]]:
         with self._lock:
             return deepcopy(list(self._records))

@@ -68,13 +68,13 @@ The same values may be supplied as `DRAGONSNIFF_BIND`, `DRAGONSNIFF_PORT`, and `
 dragonsniff --data-dir ./dragonsniff-data --allow-target dragonbreath.local --require-allowlist
 ```
 
-Every observation, Thermal capture, and Churn run is then appended to its own JSONL file as records arrive. Startup marks a previously active session as `interrupted`; it remains downloadable and is never silently resumed. Storage defaults to at most 500 sessions and 256 MiB, with oldest finished sessions removed first. Active sessions are never removed by retention.
+Every observation, Thermal capture, and Churn run is then appended to its own JSONL file as records arrive. Each complete JSONL record is flushed before it becomes visible in the live view. Metadata is cached and checkpointed every 64 records, then flushed synchronously on terminal transitions. After an ungraceful stop, startup discards and quarantines only an incomplete final JSONL record, derives authoritative counters from the evidence stream, and marks a previously active session as `interrupted`; it never silently resumes device work. A known persistence failure is instead recorded as `failed` when the metadata filesystem still permits that terminal write. Storage defaults to at most 500 sessions and 256 MiB, with oldest finished sessions removed first. Active and currently downloading sessions are never removed by retention.
 
 Use `--retention-sessions` and `--retention-bytes` to change those bounds. `DRAGONSNIFF_DATA_DIR`, `DRAGONSNIFF_ALLOWED_TARGETS`, `DRAGONSNIFF_REQUIRE_ALLOWLIST`, `DRAGONSNIFF_RETENTION_SESSIONS`, and `DRAGONSNIFF_RETENTION_BYTES` provide the equivalent environment configuration. Comma-separate multiple environment allowlist entries.
 
 `GET /healthz` reports whether the local web service is responsive and does not require device connectivity.
 
-DragonSniff does not open a browser itself. SIGINT and SIGTERM both trigger bounded session cleanup before the server closes.
+DragonSniff does not open a browser itself. SIGINT and SIGTERM both trigger a shared 12-second maximum for session and worker cleanup before the HTTP server closes. The supported container configuration allows 20 seconds so active request handlers also have time to leave their five-second socket bound.
 
 ### Docker Compose
 
@@ -86,6 +86,10 @@ docker compose up --build -d
 ```
 
 Open `http://127.0.0.1:8765`. Compose publishes only to host loopback, runs the application as a non-root user with a read-only container filesystem, and stores evidence in the `dragonsniff-data` volume. Direct IP addresses are generally more reliable than `.local` names across Docker Desktop networking.
+
+The image itself listens on `0.0.0.0` inside its container. The official Compose mapping is deliberately `127.0.0.1:8765:8765`; a generic `docker run -p 8765:8765 ...` may expose DragonSniff beyond host loopback depending on Docker and host configuration. Host-header validation is a browser/network backstop, not authentication. Do not expose this unauthenticated developer service to an untrusted network.
+
+A bind-mounted `/data` directory must be writable by the image's non-root `dragonsniff` user. Existing named volumes created by older images may also need their ownership corrected before this image can persist evidence.
 
 Stop and restart without losing evidence:
 

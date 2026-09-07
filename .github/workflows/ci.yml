@@ -62,7 +62,7 @@ jobs:
       - name: Build non-root image
         run: docker build --tag dragonsniff:ci .
 
-      - name: Verify persistence and interrupted-run recovery
+      - name: Verify persistence and all-mode container recovery
         shell: bash
         run: |
           set -euo pipefail
@@ -89,6 +89,20 @@ jobs:
             docker logs dragonsniff-ci
             return 1
           }
+          wait_for_mode_state() {
+            local mode="$1"
+            local expected="$2"
+            for attempt in {1..60}; do
+              state="$(curl --fail --silent http://127.0.0.1:8765/local/v1/session \
+                | python -c "import json,sys; print(json.load(sys.stdin)['${mode}']['state'])")"
+              if test "$state" = "$expected"; then
+                return
+              fi
+              sleep 0.25
+            done
+            docker logs dragonsniff-ci
+            return 1
+          }
           start_container
           test "$(docker exec dragonsniff-ci python -c 'import os; print(os.getuid())')" != "0"
           curl --fail --silent \
@@ -104,8 +118,28 @@ jobs:
             --header 'Content-Type: application/json' \
             --data '{"target":"http://127.0.0.1:9"}' \
             http://127.0.0.1:8765/local/v1/session/start >/dev/null
-          docker stop --time 10 dragonsniff-ci >/dev/null
+          docker stop --time 20 dragonsniff-ci >/dev/null
           docker rm dragonsniff-ci >/dev/null
           start_container
           curl --fail --silent http://127.0.0.1:8765/local/v1/history \
             | python -c 'import json,sys; data=json.load(sys.stdin); statuses={item["status"] for item in data["sessions"]}; assert {"completed", "interrupted"} <= statuses'
+          curl --fail --silent \
+            --header 'Content-Type: application/json' \
+            --data '{"target":"http://127.0.0.1:9","configuration":{"duration_seconds":1,"state_interval_seconds":0.5,"health_interval_seconds":5}}' \
+            http://127.0.0.1:8765/local/v1/capture/start >/dev/null
+          wait_for_mode_state capture completed
+          docker stop --time 20 dragonsniff-ci >/dev/null
+          docker rm dragonsniff-ci >/dev/null
+          start_container
+          curl --fail --silent http://127.0.0.1:8765/local/v1/history \
+            | python -c 'import json,sys; data=json.load(sys.stdin); assert any(item["kind"] == "capture" and item["status"] == "completed" for item in data["sessions"])'
+          curl --fail --silent \
+            --header 'Content-Type: application/json' \
+            --data '{"target":"http://127.0.0.1:9","configuration":{"cycles":1,"observe_seconds":0.25,"max_events":1,"delay_seconds":0.1}}' \
+            http://127.0.0.1:8765/local/v1/churn/start >/dev/null
+          wait_for_mode_state churn completed
+          docker stop --time 20 dragonsniff-ci >/dev/null
+          docker rm dragonsniff-ci >/dev/null
+          start_container
+          curl --fail --silent http://127.0.0.1:8765/local/v1/history \
+            | python -c 'import json,sys; data=json.load(sys.stdin); assert any(item["kind"] == "churn" and item["status"] == "completed" for item in data["sessions"])'
