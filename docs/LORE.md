@@ -254,6 +254,28 @@ was the whole point.
 
 ---
 
+### The Rule of the Bards
+
+The Chronicle is amended only when the dragon gains a new power,
+survives a named calamity,
+sheds an old skin,
+or completes an age.
+Ordinary commits are beneath the notice of the bards.
+
+In plainer engineering terms, lore should advance only when at least one of these is true:
+
+- a major capability is born;
+- a development era closes;
+- a real-world failure leaves a memorable scar that changes design thinking;
+- the deployment or architecture changes how DragonSniff fundamentally lives;
+- a bug or validation result changes project philosophy rather than merely implementation;
+- roughly five to ten meaningful PRs accumulate into one coherent chapter.
+
+Routine bug fixes, dependency bumps, copy edits, isolated tests, and ordinary maintenance do not qualify.
+When normal DragonSniff work crosses this threshold, the lore update should ride with that work rather than becoming a separate ceremonial project.
+
+---
+
 ### A small prophecy
 
 One day the proxy will be gone.
