@@ -24,29 +24,35 @@
 
   function formatBytes(bytes) {
     if (!Number.isSafeInteger(bytes) || bytes < 0) return null;
-    const units = ["B", "KB", "MB", "GB"];
+    const units = ["B", "KB", "MB", "GB", "TB"];
     let value = bytes;
     let unit = 0;
     while (value >= 1024 && unit < units.length - 1) {
       value /= 1024;
       unit += 1;
     }
-    const formatted = unit === 0 ? String(value) : String(Number(value.toFixed(1)));
+    let rounded = unit === 0 ? value : Number(value.toFixed(1));
+    if (rounded >= 1024 && unit < units.length - 1) {
+      value /= 1024;
+      unit += 1;
+      rounded = Number(value.toFixed(1));
+    }
+    const formatted = String(rounded);
     return `${formatted} ${units[unit]}`;
   }
 
   function historyStorageSummary(storage) {
     if (!storage || typeof storage !== "object" || Array.isArray(storage)) return null;
-    const retainedSessions = Number.isSafeInteger(storage.retained_sessions)
-      && storage.retained_sessions >= 0 ? storage.retained_sessions : null;
-    const retainedBytes = formatBytes(storage.retained_bytes);
+    const validSessions = Number.isSafeInteger(storage.valid_sessions)
+      && storage.valid_sessions >= 0 ? storage.valid_sessions : null;
+    const validBytes = formatBytes(storage.valid_bytes);
     let retained = null;
-    if (retainedSessions !== null && retainedBytes !== null) {
-      retained = `${retainedSessions} ${retainedSessions === 1 ? "session" : "sessions"} · ${retainedBytes} retained`;
-    } else if (retainedSessions !== null) {
-      retained = `${retainedSessions} ${retainedSessions === 1 ? "session" : "sessions"} retained`;
-    } else if (retainedBytes !== null) {
-      retained = `${retainedBytes} retained`;
+    if (validSessions !== null && validBytes !== null) {
+      retained = `${validSessions} ${validSessions === 1 ? "session" : "sessions"} · ${validBytes} retained`;
+    } else if (validSessions !== null) {
+      retained = `${validSessions} ${validSessions === 1 ? "session" : "sessions"} retained`;
+    } else if (validBytes !== null) {
+      retained = `${validBytes} retained`;
     }
 
     const invalidSessions = Number.isSafeInteger(storage.invalid_sessions)
