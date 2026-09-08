@@ -246,7 +246,7 @@ function setAnnotationControls(capture) {
   document.querySelectorAll("#annotationForm input, #annotationForm textarea").forEach((control) => {
     control.disabled = busy;
   });
-  document.querySelector("#annotationNoteButton").disabled = unavailable || document.querySelector("#annotationNote").value.length === 0;
+  document.querySelector("#annotationNoteButton").disabled = unavailable || document.querySelector("#annotationNote").value.trim().length === 0;
 }
 
 function renderAnnotation(capture) {
@@ -313,7 +313,7 @@ function submitAnnotation(marker) {
     annotationCorrelationFromForm(),
   );
   if (request === null) {
-    showNotice(document.querySelector("#annotationNotice"), "Start a capture before adding a marker.", "error");
+    showNotice(document.querySelector("#annotationNotice"), "Capture must be running and freeform notes cannot be blank.", "error");
     return;
   }
   postAnnotation(request);

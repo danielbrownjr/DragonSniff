@@ -12,6 +12,7 @@ from uuid import uuid4
 from dragonsniff.annotations import (
     AnnotationConflictError,
     AnnotationRequest,
+    MAX_KNOWN_OFFSET_MS,
     QUICK_MARKERS,
 )
 from dragonsniff.capture import CaptureConfig, CaptureRunner
@@ -120,8 +121,8 @@ class AnnotationTests(TestCase):
 
     def test_freeform_content_is_preserved_exactly(self) -> None:
         runner = active_runner()
-        note = "  ΔT = 12.5 °C; fan @ 42% — ‘left/right’, 1½ min.\n次の測定  "
-        operator = "Dan / 現場"
+        note = "  ΔT = 12.5 °C; fan @ 42% — 😀 e\u0301\n次の測定  "
+        operator = "Dan / 現場 / Инженер"
         _, record = runner.record_annotation(
             AnnotationRequest.from_value(
                 annotation_value(
@@ -139,6 +140,53 @@ class AnnotationTests(TestCase):
         decoded = json.loads(exported)
         self.assertEqual(decoded["note"], note)
         self.assertEqual(decoded["operator"], operator)
+
+    def test_unencodable_text_is_rejected_without_damaging_capture(self) -> None:
+        with TemporaryDirectory() as temporary:
+            config = CaptureConfig(
+                duration_seconds=10,
+                state_interval_seconds=1,
+                health_interval_seconds=5,
+            )
+            store = SessionStore(temporary)
+            recorder = store.create_recorder(
+                "capture",
+                "http://dragon.local",
+                config.estimated_records() + CaptureRunner.MAX_ANNOTATIONS,
+            )
+            runner = active_runner(recorder=recorder)
+            invalid_values = (
+                annotation_value(runner, "operator_note", note="bad \ud800"),
+                annotation_value(runner, "operator_note", note="bad \udfff"),
+                annotation_value(runner, "baseline_start", operator="bad \ud800"),
+                annotation_value(
+                    runner,
+                    "scope_trigger",
+                    external_correlation={"instrument": "bad \udfff"},
+                ),
+                annotation_value(
+                    runner,
+                    "scope_trigger",
+                    external_correlation={"file_reference": "bad \ud800"},
+                ),
+                annotation_value(
+                    runner,
+                    "scope_trigger",
+                    external_correlation={"clock_sync_method": "bad \udfff"},
+                ),
+            )
+            for value in invalid_values:
+                with self.subTest(value=value):
+                    with self.assertRaisesRegex(ValueError, "valid UTF-8"):
+                        runner.record_annotation(AnnotationRequest.from_value(value))
+
+            telemetry = recorder.append("http_response", sample="capture healthy")
+            records = recorder.snapshot()
+
+        self.assertEqual(runner.snapshot()["state"], "running")
+        self.assertEqual(runner.snapshot()["annotation_count"], 0)
+        self.assertEqual(telemetry["kind"], "http_response")
+        self.assertEqual([record["kind"] for record in records], ["http_response"])
 
     def test_duplicate_submission_is_exactly_once_and_content_bound(self) -> None:
         runner = active_runner()
@@ -160,6 +208,48 @@ class AnnotationTests(TestCase):
         changed = AnnotationRequest.from_value({**value, "note": "different"})
         with self.assertRaisesRegex(AnnotationConflictError, "different content"):
             runner.record_annotation(changed)
+
+    def test_null_capture_identity_is_normalized_before_idempotency_matching(self) -> None:
+        with TemporaryDirectory() as temporary:
+            config = CaptureConfig(
+                duration_seconds=10,
+                state_interval_seconds=1,
+                health_interval_seconds=5,
+            )
+            store = SessionStore(temporary)
+            recorder = store.create_recorder(
+                "capture",
+                "http://dragon.local",
+                config.estimated_records() + CaptureRunner.MAX_ANNOTATIONS,
+            )
+            runner = active_runner(recorder=recorder)
+            value = {
+                **annotation_value(runner, "fan_blocked", note="50% obstruction"),
+                "capture_session_id": None,
+            }
+
+            created, original = runner.record_annotation(
+                AnnotationRequest.from_value(value)
+            )
+            retried, retry = runner.record_annotation(
+                AnnotationRequest.from_value(value)
+            )
+
+            self.assertTrue(created)
+            self.assertFalse(retried)
+            self.assertEqual(retry, original)
+            self.assertEqual(original["capture_session_id"], recorder.session_id)
+            self.assertEqual(recorder.export_jsonl().count(value["annotation_id"]), 1)
+
+            conflicting = AnnotationRequest.from_value({**value, "note": "changed"})
+            with self.assertRaisesRegex(AnnotationConflictError, "different content"):
+                runner.record_annotation(conflicting)
+
+            stale = AnnotationRequest.from_value(
+                {**value, "capture_session_id": uuid4().hex}
+            )
+            with self.assertRaisesRegex(AnnotationConflictError, "capture_session_id"):
+                runner.record_annotation(stale)
 
     def test_persistent_restart_recovers_original_annotation_once(self) -> None:
         with TemporaryDirectory() as temporary:
@@ -285,6 +375,47 @@ class AnnotationTests(TestCase):
         with self.assertRaisesRegex(AnnotationConflictError, "run_id"):
             runner.record_annotation(stale)
 
+    def test_annotation_limit_is_explicit_and_preserves_telemetry_capacity(self) -> None:
+        runner = active_runner()
+        values = [
+            annotation_value(runner, annotation_id=str(uuid4()))
+            for _ in range(CaptureRunner.MAX_ANNOTATIONS + 1)
+        ]
+
+        for value in values[: CaptureRunner.MAX_ANNOTATIONS]:
+            created, _ = runner.record_annotation(AnnotationRequest.from_value(value))
+            self.assertTrue(created)
+
+        accepted_retry, accepted_record = runner.record_annotation(
+            AnnotationRequest.from_value(values[-2])
+        )
+        self.assertFalse(accepted_retry)
+        self.assertEqual(accepted_record["annotation_id"], values[-2]["annotation_id"])
+
+        rejected = AnnotationRequest.from_value(values[-1])
+        for _ in range(2):
+            with self.assertRaisesRegex(AnnotationConflictError, "limit reached"):
+                runner.record_annotation(rejected)
+
+        telemetry = runner.recorder.append("http_response", sample="after limit")
+        annotation_records = [
+            record
+            for record in runner.recorder.snapshot()
+            if record["kind"] == "operator_annotation"
+        ]
+        self.assertEqual(len(annotation_records), CaptureRunner.MAX_ANNOTATIONS)
+        self.assertEqual(
+            runner.snapshot()["annotation_count"], CaptureRunner.MAX_ANNOTATIONS
+        )
+        self.assertEqual(runner.recorder.summary()["dropped_records"], 0)
+        self.assertEqual(telemetry["kind"], "http_response")
+        self.assertFalse(
+            any(
+                record.get("annotation_id") == rejected.annotation_id
+                for record in annotation_records
+            )
+        )
+
     def test_external_clock_correlation_is_preserved_without_inference(self) -> None:
         runner = active_runner()
         correlation = {
@@ -343,8 +474,12 @@ class AnnotationTests(TestCase):
         }
         self.assertEqual(set(QUICK_MARKERS), required)
         runner = active_runner()
-        with self.assertRaisesRegex(ValueError, "requires a note"):
+        with self.assertRaisesRegex(ValueError, "requires"):
             AnnotationRequest.from_value(annotation_value(runner, "operator_note"))
+        with self.assertRaisesRegex(ValueError, "non-whitespace"):
+            AnnotationRequest.from_value(
+                annotation_value(runner, "operator_note", note=" \t\n ")
+            )
         with self.assertRaisesRegex(ValueError, "finite number"):
             AnnotationRequest.from_value(
                 annotation_value(
@@ -353,6 +488,36 @@ class AnnotationTests(TestCase):
                     external_correlation={"known_offset_ms": float("nan")},
                 )
             )
+        for offset in (-MAX_KNOWN_OFFSET_MS, MAX_KNOWN_OFFSET_MS):
+            with self.subTest(offset=offset):
+                request = AnnotationRequest.from_value(
+                    annotation_value(
+                        runner,
+                        "scope_trigger",
+                        external_correlation={"known_offset_ms": offset},
+                    )
+                )
+                self.assertEqual(
+                    request.external_correlation["known_offset_ms"], offset
+                )
+        for offset in (-MAX_KNOWN_OFFSET_MS - 1, MAX_KNOWN_OFFSET_MS + 1):
+            with self.subTest(offset=offset):
+                with self.assertRaisesRegex(ValueError, "must be between"):
+                    AnnotationRequest.from_value(
+                        annotation_value(
+                            runner,
+                            "scope_trigger",
+                            external_correlation={"known_offset_ms": offset},
+                        )
+                    )
+
+        request = AnnotationRequest.from_value(
+            annotation_value(
+                runner,
+                external_correlation={"instrument": "hash safety"},
+            )
+        )
+        self.assertIsInstance(hash(request), int)
         with self.assertRaisesRegex(ValueError, "finite number"):
             AnnotationRequest.from_value(
                 annotation_value(

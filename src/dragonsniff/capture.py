@@ -272,23 +272,27 @@ class CaptureRunner:
     ) -> tuple[bool, dict[str, Any]]:
         """Persist one idempotent operator-time marker without contacting the DUT."""
         with self._lock:
-            previous = self._annotations.get(request.annotation_id)
-            if previous is not None:
-                previous_request, previous_record = previous
-                if previous_request != request:
-                    raise AnnotationConflictError(
-                        "annotation_id was already used with different content"
-                    )
-                return False, deepcopy(previous_record)
             if request.run_id != self.run_id:
                 raise AnnotationConflictError(
                     "annotation run_id does not match the current capture"
                 )
             capture_session_id = getattr(self.recorder, "session_id", None)
-            if request.capture_session_id != capture_session_id:
+            if (
+                request.capture_session_id is not None
+                and request.capture_session_id != capture_session_id
+            ):
                 raise AnnotationConflictError(
                     "annotation capture_session_id does not match the current capture"
                 )
+            normalized_request = request.for_capture(capture_session_id)
+            previous = self._annotations.get(request.annotation_id)
+            if previous is not None:
+                previous_request, previous_record = previous
+                if previous_request != normalized_request:
+                    raise AnnotationConflictError(
+                        "annotation_id was already used with different content"
+                    )
+                return False, deepcopy(previous_record)
             store = getattr(self.recorder, "store", None)
             persistent_metadata = (
                 store.get_session(capture_session_id)
@@ -305,11 +309,14 @@ class CaptureRunner:
                     capture_session_id, request.annotation_id
                 )
                 if durable is not None:
-                    if not request.matches_record(durable):
+                    if not normalized_request.matches_record(durable):
                         raise AnnotationConflictError(
                             "annotation_id was already used with different content"
                         )
-                    self._annotations[request.annotation_id] = (request, durable)
+                    self._annotations[request.annotation_id] = (
+                        normalized_request,
+                        durable,
+                    )
                     self._state["annotation_count"] = len(self._annotations)
                     self._state["last_annotation"] = deepcopy(durable)
                     return False, deepcopy(durable)
@@ -334,7 +341,7 @@ class CaptureRunner:
             if request.external_correlation is not None:
                 fields["external_correlation"] = request.external_correlation
             record = self.recorder.append("operator_annotation", **fields)
-            self._annotations[request.annotation_id] = (request, record)
+            self._annotations[request.annotation_id] = (normalized_request, record)
             self._state["annotation_count"] = len(self._annotations)
             self._state["last_annotation"] = deepcopy(record)
             return True, deepcopy(record)

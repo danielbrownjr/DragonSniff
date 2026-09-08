@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from math import isfinite
 import re
 from typing import Any
@@ -35,10 +34,11 @@ QUICK_MARKERS = (
     "operator_intervention",
 )
 ANNOTATION_MARKERS = frozenset((*QUICK_MARKERS, "operator_note"))
-RUN_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
+RUN_ID_PATTERN = re.compile(r"[0-9a-f]{32}")
 MAX_NOTE_CHARACTERS = 2_048
 MAX_OPERATOR_CHARACTERS = 128
 MAX_CORRELATION_TEXT_CHARACTERS = 512
+MAX_KNOWN_OFFSET_MS = 1_000_000_000
 MAX_CAPTURE_ANNOTATIONS = 1_000
 CORRELATION_FIELDS = frozenset(
     {"instrument", "file_reference", "clock_sync_method", "known_offset_ms"}
@@ -47,6 +47,14 @@ CORRELATION_FIELDS = frozenset(
 
 class AnnotationConflictError(RuntimeError):
     """The requested annotation cannot be applied to the current capture."""
+
+
+def _validate_utf8_text(name: str, value: str) -> None:
+    """Reject JSON strings that cannot be represented in persisted UTF-8."""
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ValueError(f"{name} must contain valid UTF-8 text") from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,7 +67,9 @@ class AnnotationRequest:
     marker: str
     note: str
     operator: str | None
-    external_correlation: dict[str, Any] | None
+    # Correlation is compared as logical request content but omitted from the
+    # generated hash because dict is intentionally mutable and unhashable.
+    external_correlation: dict[str, Any] | None = field(hash=False)
 
     @classmethod
     def from_value(cls, value: object) -> "AnnotationRequest":
@@ -112,8 +122,9 @@ class AnnotationRequest:
             raise ValueError(
                 f"note must not exceed {MAX_NOTE_CHARACTERS} characters"
             )
-        if marker == "operator_note" and not note:
-            raise ValueError("operator_note requires a note")
+        _validate_utf8_text("note", note)
+        if marker == "operator_note" and not note.strip():
+            raise ValueError("operator_note requires a non-whitespace note")
 
         operator = value.get("operator")
         if operator is not None:
@@ -123,6 +134,7 @@ class AnnotationRequest:
                 raise ValueError(
                     f"operator must not exceed {MAX_OPERATOR_CHARACTERS} characters"
                 )
+            _validate_utf8_text("operator", operator)
 
         correlation = cls._validate_correlation(value.get("external_correlation"))
         return cls(
@@ -134,6 +146,10 @@ class AnnotationRequest:
             operator=operator,
             external_correlation=correlation,
         )
+
+    def for_capture(self, capture_session_id: str | None) -> "AnnotationRequest":
+        """Bind client content to the authoritative active-capture identity."""
+        return replace(self, capture_session_id=capture_session_id)
 
     def matches_record(self, record: object) -> bool:
         """Return whether durable evidence is the result of this exact request."""
@@ -175,6 +191,7 @@ class AnnotationRequest:
                     f"external_correlation.{name} must not exceed "
                     f"{MAX_CORRELATION_TEXT_CHARACTERS} characters"
                 )
+            _validate_utf8_text(f"external_correlation.{name}", item)
             result[name] = item
         offset = value.get("known_offset_ms")
         if offset is not None:
@@ -190,5 +207,10 @@ class AnnotationRequest:
                 raise ValueError(
                     "external_correlation.known_offset_ms must be a finite number"
                 )
+            if abs(offset) > MAX_KNOWN_OFFSET_MS:
+                raise ValueError(
+                    "external_correlation.known_offset_ms must be between "
+                    f"-{MAX_KNOWN_OFFSET_MS} and {MAX_KNOWN_OFFSET_MS}"
+                )
             result["known_offset_ms"] = offset
-        return deepcopy(result) if result else None
+        return result or None

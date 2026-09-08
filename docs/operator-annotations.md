@@ -24,11 +24,15 @@ Recorder sequence is the authoritative ordering shared with telemetry records. E
 
 ## Delivery and boundaries
 
-The browser keeps an unresolved annotation request in session storage and retries the same UUID after local-service connectivity returns. The server returns the original record for an identical retry and rejects reuse of that UUID with different content. With persistent storage enabled, the same resolution works after a DragonSniff restart by checking the identified capture evidence. A definitive rejection is reported as not recorded.
+The browser keeps an unresolved annotation request in session storage and retries the same UUID after local-service connectivity returns. The server returns the original record for an identical retry and rejects reuse of that UUID with different content. Idempotency uses the request normalized to the authoritative active-capture identity: a null `capture_session_id` is stamped before comparison and storage, while a supplied mismatched ID is rejected. Server-derived timestamps, sequence, and capture-relative time are not client content. With persistent storage enabled, the same resolution works after a DragonSniff restart by checking the identified capture evidence. A definitive rejection is reported as not recorded.
 
 New annotations are rejected before capture start and once the capture enters `stopping` or a terminal state. DragonSniff does not currently expose capture pause/resume, so there is no ambiguous paused boundary. A completed or interrupted persistent capture retains every already-accepted annotation in History and its original JSONL export.
 
-Each capture reserves room for up to 1,000 annotations in addition to its validated scheduled-record estimate.
+Each capture reserves room for exactly 1,000 annotations in addition to its validated scheduled-record estimate. Valid annotations 1 through 1,000 are recorded. Annotation 1,001 and later are explicitly rejected as not recorded; earlier annotations are never evicted, and telemetry keeps its separately reserved capacity. Retrying an accepted UUID still resolves to its original record after the limit, while retrying an over-limit UUID is rejected again.
+
+Freeform `operator_note` content must contain at least one non-whitespace character. Accepted content is otherwise preserved exactly, including leading/trailing whitespace, combining marks, multilingual text, and supplementary-plane characters. Every persisted text field must be encodable as UTF-8; JSON lone-surrogate escapes are rejected before the recorder is called.
+
+`external_correlation.known_offset_ms` must be finite and within ±1,000,000,000 ms. This generous sanity bound retains plausible cross-system clock offsets while rejecting accidental or abusive magnitudes.
 
 ## Quick-pick markers
 

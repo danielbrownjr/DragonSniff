@@ -165,6 +165,7 @@
       || typeof annotationId !== "string"
       || (!QUICK_ANNOTATION_MARKERS.includes(marker) && marker !== "operator_note")
       || typeof note !== "string"
+      || (marker === "operator_note" && note.trim() === "")
     ) return null;
     const persistentId = capture.recorder?.persistent_session_id;
     const request = {

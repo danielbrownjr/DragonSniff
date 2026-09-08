@@ -356,6 +356,10 @@ test("annotation request rejects stale or unsupported browser state", () => {
     annotationRequest({run_id: "run"}, id, "made_up", "", "", null),
     null,
   );
+  assert.equal(
+    annotationRequest({run_id: "run"}, id, "operator_note", " \t\n ", "", null),
+    null,
+  );
 });
 
 test("page routing accepts only owned public page names", () => {

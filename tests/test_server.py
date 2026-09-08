@@ -800,7 +800,7 @@ class ServerTests(TestCase):
                 annotation = {
                     "annotation_id": str(uuid4()),
                     "run_id": capture["run_id"],
-                    "capture_session_id": capture["recorder"]["persistent_session_id"],
+                    "capture_session_id": None,
                     "marker": "fan_blocked",
                     "note": "blocked to 50%; ΔP 14 Pa",
                     "operator": "Daniel",
@@ -813,6 +813,9 @@ class ServerTests(TestCase):
                     "POST", "/local/v1/capture/annotations", annotation
                 )
                 _, reload_body, _ = local.request("GET", "/local/v1/session")
+                reload_retry_status, reload_retry_body, _ = local.request(
+                    "POST", "/local/v1/capture/annotations", annotation
+                )
                 local.request("POST", "/local/v1/capture/stop", {})
                 deadline = time.monotonic() + 3
                 while time.monotonic() < deadline:
@@ -829,12 +832,21 @@ class ServerTests(TestCase):
             first = json.loads(first_body)
             retry = json.loads(retry_body)
             reloaded = json.loads(reload_body)
+            reload_retry = json.loads(reload_retry_body)
             records = [json.loads(line) for line in exported.splitlines()]
 
-        self.assertEqual((first_status, retry_status, export_status), (201, 200, 200))
+        self.assertEqual(
+            (first_status, retry_status, reload_retry_status, export_status),
+            (201, 200, 200, 200),
+        )
         self.assertTrue(first["created"])
         self.assertFalse(retry["created"])
         self.assertEqual(first["annotation"], retry["annotation"])
+        self.assertEqual(first["annotation"], reload_retry["annotation"])
+        self.assertEqual(
+            first["annotation"]["capture_session_id"],
+            capture["recorder"]["persistent_session_id"],
+        )
         self.assertEqual(reloaded["capture"]["annotation_count"], 1)
         self.assertEqual(
             reloaded["capture"]["last_annotation"]["note"], annotation["note"]
