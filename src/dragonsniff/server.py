@@ -15,6 +15,7 @@ import time
 from typing import Any, BinaryIO, ContextManager, Iterable
 from urllib.parse import urlsplit
 
+from ._version import __version__
 from .capture import CaptureConfig, CaptureRunner
 from .churn import ChurnConfig, ChurnRunner
 from .observer import Observer
@@ -711,7 +712,7 @@ class SessionManager:
 
 
 class DragonSniffHandler(BaseHTTPRequestHandler):
-    server_version = "DragonSniff/0.1"
+    server_version = f"DragonSniff/{__version__}"
 
     @property
     def manager(self) -> SessionManager:
