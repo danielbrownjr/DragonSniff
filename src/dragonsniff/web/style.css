@@ -181,7 +181,7 @@ main { display: grid; gap: var(--space-3); }
 label { display: block; margin-bottom: 5px; color: var(--muted-foreground); font-size: .8rem; }
 .control-row, .actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .actions { align-items: center; }
-input, select {
+input, select, textarea {
   flex: 1 1 280px;
   min-width: 0;
   color: inherit;
@@ -191,6 +191,7 @@ input, select {
   padding: 9px 11px;
   font: inherit;
 }
+textarea { width: 100%; resize: vertical; }
 .churn-card { border-left: 4px solid var(--warn); }
 .churn-card .eyebrow { color: var(--warn); margin-bottom: 4px; }
 .capture-card { border-left: 4px solid var(--primary); }
@@ -199,6 +200,29 @@ input, select {
 .capture-budget { margin: 0; color: var(--muted-foreground); font-size: .76rem; }
 .capture-budget[data-status="available"] { color: var(--ok); }
 .capture-budget[data-status="error"] { color: var(--bad); font-weight: 600; }
+.annotation-panel {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 13px 15px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--primary) 4%, var(--background));
+}
+.annotation-heading { display: flex; justify-content: space-between; gap: 12px; align-items: start; }
+.annotation-heading h3 { margin-bottom: 4px; }
+.annotation-heading p { margin: 0; }
+.annotation-heading > strong { white-space: nowrap; font: 700 .76rem ui-monospace, SFMono-Regular, Consolas, monospace; }
+.annotation-quick-picks { display: flex; flex-wrap: wrap; gap: 6px; }
+.annotation-quick-picks button { min-height: 28px; padding: 4px 8px; font-size: .72rem; }
+.annotation-form { display: grid; grid-template-columns: minmax(0, 2fr) minmax(180px, 1fr); gap: 9px; }
+.annotation-form > label { margin: 0; }
+.annotation-form input, .annotation-form textarea { margin-top: 5px; }
+.annotation-correlation, .annotation-form .actions, .annotation-latest { grid-column: 1 / -1; }
+.annotation-correlation { padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.annotation-correlation summary { cursor: pointer; color: var(--muted-foreground); font-size: .78rem; }
+.annotation-correlation-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; margin-top: 9px; }
+.annotation-latest { margin: 0; color: var(--muted-foreground); font-size: .76rem; overflow-wrap: anywhere; }
 .profile-field { max-width: 320px; }
 .profile-field select { display: block; width: 100%; margin: 5px 0 3px; }
 .profile-field span { display: block; font-size: .72rem; }
@@ -398,5 +422,7 @@ body[data-density="dense"] .card { padding: 11px; }
   .capture-form .actions > *, .churn-form .actions > * { flex: 1 1 calc(50% - var(--space-2)); }
   .thermal-panel { grid-template-columns: minmax(0, 1fr); }
   .thermal-readouts { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .annotation-heading { flex-direction: column; }
+  .annotation-form, .annotation-correlation-grid { grid-template-columns: minmax(0, 1fr); }
   .test-map, .lab-options { grid-template-columns: 1fr; }
 }

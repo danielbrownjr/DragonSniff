@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Durable, idempotent operator annotations for active Thermal captures, including quick-pick markers, exact freeform notes, capture-relative and UTC timing, and optional external-instrument correlation metadata.
+- Local retry resolution for interrupted annotation submissions without duplicate evidence or DUT-facing mutation traffic.
+
 ## v0.3.0 — 2026-09-08
 
 ### Added

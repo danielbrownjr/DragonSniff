@@ -15,6 +15,7 @@ class FixtureHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         config = self.server.config  # type: ignore[attr-defined]
+        config.setdefault("request_log", []).append(("GET", self.path))
         bad_status_once = config.get("bad_status_once", set())
         if self.path in bad_status_once:
             bad_status_once.remove(self.path)
@@ -63,6 +64,13 @@ class FixtureHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def do_POST(self) -> None:
+        config = self.server.config  # type: ignore[attr-defined]
+        config.setdefault("request_log", []).append(("POST", self.path))
+        self.send_response(405)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
 
 class DeviceFixture:

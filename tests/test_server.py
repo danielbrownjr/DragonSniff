@@ -7,6 +7,7 @@ from threading import Event, Thread
 import time
 from unittest import TestCase
 from unittest.mock import patch
+from uuid import uuid4
 
 from dragonsniff.capture import CaptureConfig
 from dragonsniff.recording import SessionRecorder
@@ -305,8 +306,9 @@ class ServerTests(TestCase):
     def test_static_ui_explains_direct_file_use_and_exposes_copy_controls(self) -> None:
         with LocalServerFixture() as local:
             status, body, _ = local.request("GET", "/")
-            app_status, _, _ = local.request("GET", "/app.js")
+            app_status, app_body, _ = local.request("GET", "/app.js")
         html = body.decode()
+        app_js = app_body.decode()
         self.assertEqual(status, 200)
         self.assertEqual(app_status, 200)
         self.assertIn("DragonSniff is not a standalone HTML file", html)
@@ -327,6 +329,17 @@ class ServerTests(TestCase):
         self.assertIn('id="thermal-heading">Thermals', html)
         self.assertIn('id="pidGauge"', html)
         self.assertIn('id="pidGaugeNeedle"', html)
+        self.assertIn('id="annotationQuickPicks"', html)
+        self.assertIn('id="annotationNote"', html)
+        self.assertIn("never send a request to the observed device", html)
+        self.assertEqual(
+            app_js.count(
+                'document.querySelector("#annotationForm").addEventListener("submit"'
+            ),
+            1,
+        )
+        self.assertEqual(app_js.count("recoverPendingAnnotation();"), 1)
+        self.assertEqual(app_js.count("renderAnnotation(capture);"), 1)
         self.assertIn('data-page="thermal"', html)
         self.assertIn('data-page="churn"', html)
         self.assertIn('data-page="history"', html)
@@ -761,6 +774,102 @@ class ServerTests(TestCase):
         self.assertTrue(
             any(record["kind"] == "capture_run_completed" for record in capture_records)
         )
+
+    def test_capture_annotation_is_local_durable_idempotent_and_survives_reconnect(self) -> None:
+        with TemporaryDirectory() as temporary:
+            request_log = []
+            manager = SessionManager(store=SessionStore(temporary))
+            with (
+                DeviceFixture({"request_log": request_log, "quiet_seconds": 0.1}) as device,
+                LocalServerFixture(manager) as local,
+            ):
+                local.request("POST", "/local/v1/session/start", {"target": device.target})
+                _, start_body, _ = local.request(
+                    "POST",
+                    "/local/v1/capture/start",
+                    {
+                        "target": device.target,
+                        "configuration": {
+                            "duration_seconds": 10,
+                            "state_interval_seconds": 1,
+                            "health_interval_seconds": 5,
+                        },
+                    },
+                )
+                capture = json.loads(start_body)["capture"]
+                annotation = {
+                    "annotation_id": str(uuid4()),
+                    "run_id": capture["run_id"],
+                    "capture_session_id": capture["recorder"]["persistent_session_id"],
+                    "marker": "fan_blocked",
+                    "note": "blocked to 50%; ΔP 14 Pa",
+                    "operator": "Daniel",
+                }
+
+                first_status, first_body, _ = local.request(
+                    "POST", "/local/v1/capture/annotations", annotation
+                )
+                retry_status, retry_body, _ = local.request(
+                    "POST", "/local/v1/capture/annotations", annotation
+                )
+                _, reload_body, _ = local.request("GET", "/local/v1/session")
+                local.request("POST", "/local/v1/capture/stop", {})
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline:
+                    _, body, _ = local.request("GET", "/local/v1/session")
+                    snapshot = json.loads(body)
+                    if snapshot["active_mode"] == "observation":
+                        break
+                    time.sleep(0.01)
+                local.request("POST", "/local/v1/session/reconnect-events", {})
+                export_status, exported, _ = local.request(
+                    "GET", "/local/v1/capture/export"
+                )
+
+            first = json.loads(first_body)
+            retry = json.loads(retry_body)
+            reloaded = json.loads(reload_body)
+            records = [json.loads(line) for line in exported.splitlines()]
+
+        self.assertEqual((first_status, retry_status, export_status), (201, 200, 200))
+        self.assertTrue(first["created"])
+        self.assertFalse(retry["created"])
+        self.assertEqual(first["annotation"], retry["annotation"])
+        self.assertEqual(reloaded["capture"]["annotation_count"], 1)
+        self.assertEqual(
+            reloaded["capture"]["last_annotation"]["note"], annotation["note"]
+        )
+        self.assertEqual(
+            sum(record.get("annotation_id") == annotation["annotation_id"] for record in records),
+            1,
+        )
+        self.assertTrue(request_log)
+        self.assertEqual({method for method, _ in request_log}, {"GET"})
+
+    def test_capture_annotation_endpoint_rejects_invalid_or_inactive_requests(self) -> None:
+        with LocalServerFixture() as local:
+            invalid_status, invalid_body, _ = local.request(
+                "POST",
+                "/local/v1/capture/annotations",
+                {"annotation_id": "not-a-uuid"},
+            )
+            inactive_status, inactive_body, _ = local.request(
+                "POST",
+                "/local/v1/capture/annotations",
+                {
+                    "annotation_id": str(uuid4()),
+                    "run_id": uuid4().hex,
+                    "capture_session_id": None,
+                    "marker": "abort",
+                    "note": "",
+                    "operator": None,
+                },
+            )
+
+        self.assertEqual(invalid_status, 400)
+        self.assertEqual(json.loads(invalid_body)["error"], "invalid_request")
+        self.assertEqual(inactive_status, 409)
+        self.assertEqual(json.loads(inactive_body)["error"], "annotation_conflict")
 
     def test_capture_export_survives_reconnect_and_later_churn(self) -> None:
         with DeviceFixture() as device, LocalServerFixture() as local:

@@ -4,6 +4,9 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 const {
   MAX_ESTIMATED_RECORDS,
+  QUICK_ANNOTATION_MARKERS,
+  annotationMarkerLabel,
+  annotationRequest,
   captureBudgetState,
   captureProfileConfiguration,
   captureRecordEstimate,
@@ -293,6 +296,66 @@ test("capture budget state gates invalid and oversized schedules", () => {
     health_interval_seconds: 5,
   }).allowed, false);
   assert.equal(captureBudgetState({duration_seconds: 0}).allowed, false);
+});
+
+test("quick annotations expose the complete stable marker vocabulary", () => {
+  assert.deepEqual(QUICK_ANNOTATION_MARKERS, [
+    "fan_blocked", "fan_unblocked", "airflow_partial", "airflow_restored",
+    "thermistor_unplugged", "thermistor_reconnected", "chamber_opened", "chamber_closed",
+    "printer_stopped", "bed_target_changed", "printer_link_lost", "jumpjet_power_off",
+    "jumpjet_power_on", "stimulus_applied", "stimulus_removed", "baseline_start",
+    "recovery_start", "external_log_start", "scope_trigger", "flir_capture", "abort",
+    "operator_intervention",
+  ]);
+  assert.equal(annotationMarkerLabel("printer_link_lost"), "Printer link lost");
+  assert.equal(annotationMarkerLabel("jumpjet_power_on"), "Jump Jet power on");
+  assert.equal(annotationMarkerLabel("flir_capture"), "FLIR capture");
+});
+
+test("annotation request preserves freeform and external correlation content", () => {
+  const capture = {
+    run_id: "0123456789abcdef0123456789abcdef",
+    recorder: {persistent_session_id: "fedcba9876543210fedcba9876543210"},
+  };
+  const request = annotationRequest(
+    capture,
+    "01234567-89ab-4cde-8fab-0123456789ab",
+    "flir_capture",
+    " ΔT 12.5 °C — IMG #42 ",
+    "Dan / 現場",
+    {
+      instrument: "FLIR E8-XT",
+      file_reference: "IMG_0042.jpg",
+      clock_sync_method: "visible UTC clock frame",
+      known_offset_ms: -237.5,
+      ignored: "not part of the contract",
+    },
+  );
+
+  assert.deepEqual(request, {
+    annotation_id: "01234567-89ab-4cde-8fab-0123456789ab",
+    run_id: capture.run_id,
+    capture_session_id: capture.recorder.persistent_session_id,
+    marker: "flir_capture",
+    note: " ΔT 12.5 °C — IMG #42 ",
+    operator: "Dan / 現場",
+    external_correlation: {
+      instrument: "FLIR E8-XT",
+      file_reference: "IMG_0042.jpg",
+      clock_sync_method: "visible UTC clock frame",
+      known_offset_ms: -237.5,
+    },
+  });
+});
+
+test("annotation request rejects stale or unsupported browser state", () => {
+  const id = "01234567-89ab-4cde-8fab-0123456789ab";
+  assert.equal(annotationRequest(null, id, "abort", "", "", null), null);
+  assert.equal(annotationRequest({}, id, "abort", "", "", null), null);
+  assert.equal(
+    annotationRequest({run_id: "run"}, id, "made_up", "", "", null),
+    null,
+  );
 });
 
 test("page routing accepts only owned public page names", () => {

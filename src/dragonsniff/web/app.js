@@ -11,6 +11,8 @@ let churnProfiles = {};
 let captureProfiles = {};
 let updateTimer = null;
 let historyRequestInFlight = false;
+let annotationRequestInFlight = false;
+const pendingAnnotationKey = "dragonsniff.pendingCaptureAnnotation";
 
 const pageCopy = {
   dashboard: ["DragonSniff", "Sniff out one Dragon, follow the smoke, and bag the raw evidence."],
@@ -188,9 +190,151 @@ async function localRequest(path, options = {}) {
   });
   const payload = await response.json();
   if (!response.ok) {
-    throw new Error(payload.message || payload.error || `HTTP ${response.status}`);
+    const error = new Error(payload.message || payload.error || `HTTP ${response.status}`);
+    error.status = response.status;
+    throw error;
   }
   return payload;
+}
+
+function annotationId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  const bytes = new Uint8Array(16);
+  if (globalThis.crypto?.getRandomValues) globalThis.crypto.getRandomValues(bytes);
+  else for (let index = 0; index < bytes.length; index += 1) bytes[index] = Math.floor(Math.random() * 256);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = [...bytes].map((value) => value.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function annotationCorrelationFromForm() {
+  const offsetText = document.querySelector("#annotationKnownOffset").value;
+  return {
+    instrument: document.querySelector("#annotationInstrument").value,
+    file_reference: document.querySelector("#annotationFileReference").value,
+    clock_sync_method: document.querySelector("#annotationClockSync").value,
+    known_offset_ms: offsetText === "" ? null : Number(offsetText),
+  };
+}
+
+function storedPendingAnnotation() {
+  const encoded = sessionStorage.getItem(pendingAnnotationKey);
+  if (encoded === null) return null;
+  try {
+    const value = JSON.parse(encoded);
+    return value && typeof value === "object" ? value : null;
+  } catch (error) {
+    sessionStorage.removeItem(pendingAnnotationKey);
+    return null;
+  }
+}
+
+function clearPendingAnnotation(annotationId) {
+  const pending = storedPendingAnnotation();
+  if (pending?.annotation_id === annotationId) sessionStorage.removeItem(pendingAnnotationKey);
+}
+
+function setAnnotationControls(capture) {
+  const running = capture?.state === "running";
+  const limitReached = (capture?.annotation_count || 0) >= (capture?.annotation_limit || 1000);
+  const busy = annotationRequestInFlight || storedPendingAnnotation() !== null;
+  const unavailable = !running || busy || limitReached;
+  document.querySelectorAll("#annotationQuickPicks button").forEach((button) => {
+    button.disabled = unavailable;
+  });
+  document.querySelectorAll("#annotationForm input, #annotationForm textarea").forEach((control) => {
+    control.disabled = busy;
+  });
+  document.querySelector("#annotationNoteButton").disabled = unavailable || document.querySelector("#annotationNote").value.length === 0;
+}
+
+function renderAnnotation(capture) {
+  const count = capture?.annotation_count || 0;
+  const limit = capture?.annotation_limit || 1000;
+  text("#annotationCount", `${count} / ${limit}`);
+  const latest = capture?.last_annotation;
+  text(
+    "#annotationLatest",
+    latest
+      ? `Latest: ${payloadTools.annotationMarkerLabel(latest.marker)} at +${Number(latest.capture_relative_ms).toFixed(1)} ms (${latest.timestamp})${latest.note ? ` — ${latest.note}` : ""}`
+      : "No operator marker recorded in this capture.",
+  );
+  setAnnotationControls(capture);
+}
+
+async function postAnnotation(request, recovering = false) {
+  if (annotationRequestInFlight) return;
+  annotationRequestInFlight = true;
+  sessionStorage.setItem(pendingAnnotationKey, JSON.stringify(request));
+  setAnnotationControls(currentSnapshot?.capture);
+  const annotationNotice = document.querySelector("#annotationNotice");
+  showNotice(annotationNotice, recovering ? "Confirming interrupted marker..." : "Recording marker...", "requesting");
+  try {
+    const result = await localRequest("/local/v1/capture/annotations", {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+    clearPendingAnnotation(request.annotation_id);
+    render(result.snapshot);
+    const relative = Number(result.annotation.capture_relative_ms).toFixed(1);
+    showNotice(
+      annotationNotice,
+      `${result.created ? "Recorded" : "Confirmed already recorded"}: ${payloadTools.annotationMarkerLabel(result.annotation.marker)} at +${relative} ms.`,
+      "available",
+    );
+    document.querySelector("#annotationNote").value = "";
+  } catch (error) {
+    if (Number.isInteger(error.status)) {
+      clearPendingAnnotation(request.annotation_id);
+      showNotice(annotationNotice, `Not recorded: ${error.message}`, "error");
+    } else {
+      showNotice(
+        annotationNotice,
+        "Marker outcome is not confirmed yet. DragonSniff will retry the same annotation ID when the local service reconnects.",
+        "error",
+      );
+    }
+  } finally {
+    annotationRequestInFlight = false;
+    setAnnotationControls(currentSnapshot?.capture);
+  }
+}
+
+function submitAnnotation(marker) {
+  if (annotationRequestInFlight || storedPendingAnnotation() !== null) return;
+  const note = document.querySelector("#annotationNote").value;
+  const request = payloadTools.annotationRequest(
+    currentSnapshot?.capture,
+    annotationId(),
+    marker,
+    note,
+    document.querySelector("#annotationOperator").value,
+    annotationCorrelationFromForm(),
+  );
+  if (request === null) {
+    showNotice(document.querySelector("#annotationNotice"), "Start a capture before adding a marker.", "error");
+    return;
+  }
+  postAnnotation(request);
+}
+
+function recoverPendingAnnotation() {
+  const pending = storedPendingAnnotation();
+  if (pending === null || annotationRequestInFlight) return;
+  postAnnotation(pending, true);
+}
+
+function renderAnnotationQuickPicks() {
+  const container = document.querySelector("#annotationQuickPicks");
+  payloadTools.QUICK_ANNOTATION_MARKERS.forEach((marker) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.marker = marker;
+    button.textContent = payloadTools.annotationMarkerLabel(marker);
+    button.addEventListener("click", () => submitAnnotation(marker));
+    container.append(button);
+  });
 }
 
 function renderEndpoint(path, result = {}) {
@@ -449,7 +593,7 @@ function renderCapture(snapshot) {
   text("#captureSamples", capture.samples_completed || 0);
   text("#captureStateFailures", capture.state_failures || 0);
   text("#captureHealthFailures", capture.health_failures || 0);
-  text("#captureEstimate", `${capture.recorder?.records || 0} / ${capture.estimated_records || 0}`);
+  text("#captureEstimate", `${capture.recorder?.records || 0} / ${capture.recorder?.max_records || 0}`);
   text("#captureElapsed", `${((capture.elapsed_ms || 0) / 1000).toFixed(1)} s`);
   const bootStatus = capture.boot_id_changed
     ? `changed: ${capture.initial_boot_id || "unknown"} -> ${capture.latest_boot_id || "unknown"}`
@@ -461,6 +605,7 @@ function renderCapture(snapshot) {
   text("#captureLatestState", capture.latest_state ? pretty(capture.latest_state) : "No state observation");
   text("#captureLatestHealth", capture.latest_health ? pretty(capture.latest_health) : "No health observation");
   renderThermals(capture.latest_state);
+  renderAnnotation(capture);
 
   document.querySelectorAll("#captureForm input").forEach((input) => {
     input.disabled = running || stopping;
@@ -563,6 +708,7 @@ async function update() {
   requestInFlight = true;
   try {
     render(await localRequest("/local/v1/session"));
+    recoverPendingAnnotation();
   } catch (error) {
     showNotice(notice, `Local service error: ${error.message}`, "error");
   } finally {
@@ -636,6 +782,16 @@ if (window.location.protocol === "file:") {
   document.querySelector("#captureStopButton").addEventListener("click", () => {
     act("/local/v1/capture/stop", {}, captureNotice);
   });
+  document.querySelector("#annotationForm").addEventListener("submit", (event) => {
+    event.preventDefault();
+    submitAnnotation("operator_note");
+  });
+  document.querySelector("#annotationNote").addEventListener("input", () => {
+    setAnnotationControls(currentSnapshot?.capture);
+  });
+  document.querySelector("#annotationOperator").addEventListener("input", (event) => {
+    localStorage.setItem("dragonsniff.operator", event.currentTarget.value);
+  });
   document.querySelector("#copyCaptureSummary").addEventListener("click", (event) => {
     copyCapture(event.currentTarget);
   });
@@ -679,6 +835,8 @@ if (window.location.protocol === "file:") {
   });
 
   targetInput.value = localStorage.getItem("dragonsniff.target") || "";
+  document.querySelector("#annotationOperator").value = localStorage.getItem("dragonsniff.operator") || "";
+  renderAnnotationQuickPicks();
   update();
   if (window.location.pathname === "/lab") loadLabOptions();
   else scheduleUpdates(1000);

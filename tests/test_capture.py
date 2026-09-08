@@ -93,7 +93,10 @@ class CaptureConfigTests(TestCase):
         config = CaptureConfig.profiles()["Long Haul"]
         runner = CaptureRunner(parse_target("dragon.local"), config)
 
-        self.assertEqual(runner.recorder.max_records, config.estimated_records())
+        self.assertEqual(
+            runner.recorder.max_records,
+            config.estimated_records() + CaptureRunner.MAX_ANNOTATIONS,
+        )
         self.assertGreater(config.estimated_records(), 2_000)
         self.assertLessEqual(
             config.estimated_records(), CaptureConfig.MAX_ESTIMATED_RECORDS

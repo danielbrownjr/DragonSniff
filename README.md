@@ -114,6 +114,7 @@ See the [direct trusted-LAN Portainer recipe](docs/portainer.md) for the NAS-val
 
 - **Observer:** fetches the three JSON endpoints and holds one SSE stream. Stop/reconnect controls affect the stream without silently replacing the session.
 - **Capture:** polls fixed state and health endpoints on a bounded schedule. It pauses live observation and restores it after cleanup.
+- **Operator annotation:** adds a local operator-time marker to a running Thermal capture without sending traffic to the observed device.
 - **Churn:** performs bounded, sequential SSE lifecycle exercises. Capacity rejection and cleanup timing are retained as evidence.
 - **Session recorder:** stores ordered raw and parsed observations in bounded memory and, when configured, appends them to durable JSONL evidence.
 
@@ -121,16 +122,17 @@ Only one operating mode is active at a time. The UI identifies the active mode, 
 
 ## Exporting evidence
 
-The dashboard offers **Download current session JSONL** only while the current session owns recorded evidence; otherwise it says **No current evidence**. Thermal and Churn provide run-specific downloads once their evidence exists. **History** is the durable, authoritative source for prior persisted sessions. JSONL records retain timestamps, request identities, raw response bodies, parsed JSON when valid, SSE lifecycle events, and cleanup outcomes.
+The dashboard offers **Download current session JSONL** only while the current session owns recorded evidence; otherwise it says **No current evidence**. Thermal and Churn provide run-specific downloads once their evidence exists. **History** is the durable, authoritative source for prior persisted sessions. JSONL records retain timestamps, request identities, raw response bodies, parsed JSON when valid, SSE lifecycle events, operator annotations, and cleanup outcomes.
 
 Downloads use stable names that identify their ownership: `dragonsniff-session.jsonl` for the active session, `dragonsniff-thermal-capture.jsonl` for a retained Thermal run, and `dragonsniff-sse-churn.jsonl` for a retained Churn run.
 
-The active-run downloads remain available. With persistent storage enabled, **History** also lists independently downloadable observation, Thermal, and Churn sessions after a process or container restart.
+The active-run downloads remain available. With persistent storage enabled, **History** also lists independently downloadable observation, Thermal, and Churn sessions after a process or container restart. Thermal captures accept quick-pick markers and exact freeform operator notes; see the [operator annotation contract](docs/operator-annotations.md).
 
 ## Documentation
 
 - [Getting started and concepts](https://github.com/danielbrownjr/DragonSniff/wiki)
 - [Passive thermal capture](docs/thermal-capture.md)
+- [Operator annotations](docs/operator-annotations.md)
 - [Bounded SSE churn runner](docs/churn-runner.md)
 - [Dragon API findings](docs/dragon-api-findings.md)
 - [Hardware validation](docs/hardware-validation.md)

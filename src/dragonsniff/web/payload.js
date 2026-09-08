@@ -9,6 +9,14 @@
 
   const MAX_ESTIMATED_RECORDS = 25_000;
   const PUBLIC_PAGES = Object.freeze(["dashboard", "thermal", "churn", "history", "evidence"]);
+  const QUICK_ANNOTATION_MARKERS = Object.freeze([
+    "fan_blocked", "fan_unblocked", "airflow_partial", "airflow_restored",
+    "thermistor_unplugged", "thermistor_reconnected", "chamber_opened", "chamber_closed",
+    "printer_stopped", "bed_target_changed", "printer_link_lost", "jumpjet_power_off",
+    "jumpjet_power_on", "stimulus_applied", "stimulus_removed", "baseline_start",
+    "recovery_start", "external_log_start", "scope_trigger", "flir_capture", "abort",
+    "operator_intervention",
+  ]);
 
   function payloadText(result, view) {
     if (!result || (view !== "parsed" && view !== "raw")) return null;
@@ -103,7 +111,8 @@
       "health_successes",
       "health_failures", "initial_boot_id", "latest_boot_id", "boot_id_changed",
       "boot_id_changes", "cleanup_complete", "failure", "start_timestamp",
-      "end_timestamp", "elapsed_ms",
+      "end_timestamp", "elapsed_ms", "annotation_count", "annotation_limit",
+      "last_annotation",
     ];
     const summary = {};
     fields.forEach((name) => { summary[name] = capture[name]; });
@@ -147,6 +156,47 @@
       maximum: validMaximum,
       allowed: estimate !== null && estimate <= validMaximum,
     };
+  }
+
+  function annotationRequest(capture, annotationId, marker, note, operator, correlation) {
+    if (
+      !capture
+      || typeof capture.run_id !== "string"
+      || typeof annotationId !== "string"
+      || (!QUICK_ANNOTATION_MARKERS.includes(marker) && marker !== "operator_note")
+      || typeof note !== "string"
+    ) return null;
+    const persistentId = capture.recorder?.persistent_session_id;
+    const request = {
+      annotation_id: annotationId,
+      run_id: capture.run_id,
+      capture_session_id: typeof persistentId === "string" ? persistentId : null,
+      marker,
+      note,
+      operator: typeof operator === "string" && operator !== "" ? operator : null,
+    };
+    if (correlation && typeof correlation === "object") {
+      const external = {};
+      ["instrument", "file_reference", "clock_sync_method"].forEach((name) => {
+        if (typeof correlation[name] === "string" && correlation[name] !== "") {
+          external[name] = correlation[name];
+        }
+      });
+      if (Number.isFinite(correlation.known_offset_ms)) {
+        external.known_offset_ms = correlation.known_offset_ms;
+      }
+      if (Object.keys(external).length) request.external_correlation = external;
+    }
+    return request;
+  }
+
+  function annotationMarkerLabel(marker) {
+    if (typeof marker !== "string") return "";
+    return marker
+      .replaceAll("_", " ")
+      .replace(/^./, (letter) => letter.toUpperCase())
+      .replace(/^Jumpjet /, "Jump Jet ")
+      .replace(/^Flir /, "FLIR ");
   }
 
   function currentEvidenceControl(snapshot) {
@@ -198,9 +248,12 @@
     captureProfileConfiguration,
     captureRecordEstimate,
     captureBudgetState,
+    annotationRequest,
+    annotationMarkerLabel,
     currentEvidenceControl,
     resolvePage,
     thermalSnapshot,
     MAX_ESTIMATED_RECORDS,
+    QUICK_ANNOTATION_MARKERS,
   };
 });

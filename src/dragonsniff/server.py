@@ -16,6 +16,11 @@ from typing import Any, BinaryIO, ContextManager, Iterable
 from urllib.parse import urlsplit
 
 from ._version import __version__
+from .annotations import (
+    MAX_CAPTURE_ANNOTATIONS,
+    AnnotationConflictError,
+    AnnotationRequest,
+)
 from .capture import CaptureConfig, CaptureRunner
 from .churn import ChurnConfig, ChurnRunner
 from .observer import Observer
@@ -39,6 +44,7 @@ LOCAL_POST_PATHS = {
     "/local/v1/churn/stop",
     "/local/v1/capture/start",
     "/local/v1/capture/stop",
+    "/local/v1/capture/annotations",
 }
 STATIC_FILES = {
     "/": ("index.html", "text/html; charset=utf-8"),
@@ -330,6 +336,31 @@ class SessionManager:
         completed = capture.stop()
         return completed, self.snapshot()
 
+    def add_capture_annotation(
+        self, value: object
+    ) -> tuple[bool, dict[str, Any], dict[str, Any]]:
+        request = AnnotationRequest.from_value(value)
+        capture = self.current_capture()
+        if capture is None:
+            existing = (
+                self._store.find_annotation(
+                    request.capture_session_id, request.annotation_id
+                )
+                if self._store is not None
+                else None
+            )
+            if existing is not None:
+                if not request.matches_record(existing):
+                    raise AnnotationConflictError(
+                        "annotation_id was already used with different content"
+                    )
+                return False, existing, self.snapshot()
+            raise AnnotationConflictError(
+                "annotation was not recorded and the capture is no longer available"
+            )
+        created, record = capture.record_annotation(request)
+        return created, record, self.snapshot()
+
     def current_capture(self) -> CaptureRunner | None:
         with self._lock:
             return self._capture
@@ -542,7 +573,9 @@ class SessionManager:
             target,
             config,
             recorder=self._store.create_recorder(
-                "capture", target.base_url, config.estimated_records()
+                "capture",
+                target.base_url,
+                config.estimated_records() + MAX_CAPTURE_ANNOTATIONS,
             ),
         )
 
@@ -624,6 +657,9 @@ class SessionManager:
             "start_timestamp": None,
             "end_timestamp": None,
             "elapsed_ms": 0.0,
+            "annotation_count": 0,
+            "annotation_limit": MAX_CAPTURE_ANNOTATIONS,
+            "last_annotation": None,
             "active_device_connections": 0,
             "device_connection_limit": 1,
             "recorder": {
@@ -872,6 +908,25 @@ class DragonSniffHandler(BaseHTTPRequestHandler):
             elif path == "/local/v1/capture/stop":
                 completed, result = self.manager.stop_capture()
                 self._send_json(200 if completed else 202, result)
+            elif path == "/local/v1/capture/annotations":
+                try:
+                    created, annotation, snapshot = (
+                        self.manager.add_capture_annotation(body)
+                    )
+                except AnnotationConflictError as exc:
+                    self._send_json(
+                        409,
+                        {"error": "annotation_conflict", "message": str(exc)},
+                    )
+                else:
+                    self._send_json(
+                        201 if created else 200,
+                        {
+                            "created": created,
+                            "annotation": annotation,
+                            "snapshot": snapshot,
+                        },
+                    )
             else:
                 self._send_json(404, {"error": "not_found"})
         except (TargetValidationError, ValueError, RuntimeError) as exc:
