@@ -10,6 +10,23 @@ on:
         required: true
         default: false
         type: boolean
+      promotion_target:
+        description: Promote an already-verified immutable image
+        required: true
+        default: none
+        type: choice
+        options:
+          - none
+          - version
+          - latest
+      release_version:
+        description: Version tag for promotion, for example v0.4.0
+        required: false
+        type: string
+      release_sha:
+        description: Exact 40-character release commit SHA for promotion
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -51,7 +68,6 @@ jobs:
         with:
           images: ${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
             type=sha,prefix=sha-,format=long
 
       - name: Build and push image
@@ -63,3 +79,72 @@ jobs:
           labels: ${{ steps.metadata.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  promote:
+    name: Promote verified image
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.promotion_target != 'none'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Validate promotion request
+        env:
+          PROMOTION_TARGET: ${{ inputs.promotion_target }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          RELEASE_SHA: ${{ inputs.release_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$GITHUB_REF" = "refs/tags/$RELEASE_VERSION"
+          test "$(git rev-parse "$GITHUB_REF^{commit}")" = "$RELEASE_SHA"
+          test "$(PYTHONPATH=src python -c 'from dragonsniff._version import __version__; print(__version__)')" = "${RELEASE_VERSION#v}"
+          test "$PROMOTION_TARGET" = version -o "$PROMOTION_TARGET" = latest
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Promote immutable image to version tag
+        if: inputs.promotion_target == 'version'
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          RELEASE_SHA: ${{ inputs.release_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_ref="$IMAGE_NAME:sha-$RELEASE_SHA"
+          source_digest="$(docker buildx imagetools inspect "$source_ref" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          docker buildx imagetools create --tag "$IMAGE_NAME:$RELEASE_VERSION" "$source_ref@$source_digest"
+          version_digest="$(docker buildx imagetools inspect "$IMAGE_NAME:$RELEASE_VERSION" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          test "$version_digest" = "$source_digest"
+
+      - name: Promote verified version to latest
+        if: inputs.promotion_target == 'latest'
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          RELEASE_SHA: ${{ inputs.release_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_ref="$IMAGE_NAME:sha-$RELEASE_SHA"
+          source_digest="$(docker buildx imagetools inspect "$source_ref" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          version_digest="$(docker buildx imagetools inspect "$IMAGE_NAME:$RELEASE_VERSION" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          test "$version_digest" = "$source_digest"
+          docker buildx imagetools create --tag "$IMAGE_NAME:latest" "$source_ref@$source_digest"
+          latest_digest="$(docker buildx imagetools inspect "$IMAGE_NAME:latest" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          test "$latest_digest" = "$source_digest"

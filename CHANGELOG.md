@@ -1,11 +1,22 @@
 # Changelog
 
-## Unreleased
+## v0.4.0 — 2026-09-08
 
 ### Added
 
 - Durable, idempotent operator annotations for active Thermal captures, including quick-pick markers, exact freeform notes, capture-relative and UTC timing, and optional external-instrument correlation metadata.
 - Local retry resolution for interrupted annotation submissions without duplicate evidence or DUT-facing mutation traffic.
+
+### Validation
+
+- Exercise a genuine lost client response on the NAS after the annotation was durably stored, restart DragonSniff, and confirm that retrying the same UUID and logical content returns the original record with `created: false` and no duplicate.
+- Confirm annotations remain ordered with telemetry, survive reload, reconnect, graceful restart, and interrupted-capture recovery, and export without content or identity loss.
+- Confirm the observed-device request audit remains GET-only and annotation capacity neither evicts nor corrupts telemetry evidence.
+
+### Known limitations
+
+- Issue #33 remains open for device-originated lone-surrogate serialization hardening. Operator-input Unicode validation is implemented; malformed Unicode originating from a device is separate and is not claimed fixed here.
+- Authentication, HTTPS, and public or untrusted-network deployment remain unsupported.
 
 ## v0.3.0 — 2026-09-08
 
