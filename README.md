@@ -108,7 +108,7 @@ Use `docker compose down` to remove the container while retaining the named volu
 
 Main-branch images are published publicly as `ghcr.io/danielbrownjr/dragonsniff:latest` and as an immutable `sha-<full-commit-sha>` tag. `latest` is convenient for routine upgrades; the SHA tag gives a reproducible deployment and rollback point. Portainer should use `image:`, not a remote `build:` context, so neither Git nor a local image build is required on the NAS.
 
-See the [direct trusted-LAN Portainer recipe](docs/portainer.md) for the hardware-validated one-service stack with persistent evidence. The real NAS now publishes DragonSniff directly with its configured authority; the former Caddy header-rewrite workaround has been retired. The package is public, so do not configure a Portainer registry token solely to pull DragonSniff.
+See the [direct trusted-LAN Portainer recipe](docs/portainer.md) for the hardware-validated one-service stack with persistent evidence. A reference NAS deployment publishes DragonSniff directly with its configured authority. The package is public, so do not configure a Portainer registry token solely to pull DragonSniff.
 
 ## Concepts
 

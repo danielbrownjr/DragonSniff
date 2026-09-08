@@ -19,9 +19,9 @@ With `--data-dir`, each observation, Thermal capture, and Churn run owns a sessi
 
 Each complete JSONL record is flushed before the live recorder reports success. Metadata is cached, checkpointed every 64 records, and synchronously updated on terminal transitions. Startup streams unfinished evidence to reconcile counters, quarantines only an incomplete final record as `evidence.partial`, and marks a previously active run `interrupted`. It never resumes device work or invents a response.
 
-History keeps `completed`, `cancelled`, `failed`, and `interrupted` distinct. Retention is bounded by total bytes and session count, protects active and leased downloads, accounts for invalid session directories, and treats deletion failure as retryable housekeeping. A top-level storage traversal failure produces a bounded JSON error rather than a false empty result.
+History keeps `completed`, `cancelled`, `failed`, and `interrupted` distinct. A known error is durably classified as `failed` only when the metadata filesystem permits the terminal write; if storage is completely unwritable, the last durable on-disk metadata is the limit of what can be guaranteed. Retention is bounded by total bytes and session count, protects active and leased downloads, accounts for invalid session directories, and treats deletion failure as retryable housekeeping. A top-level storage traversal failure produces a bounded JSON error rather than a false empty result.
 
-Session/evidence creation and atomic metadata replacement flush their containing directories on platforms that expose directory `fsync`. Windows retains atomic replacement and file-flush guarantees without claiming portable directory-flush behavior. New Windows evidence uses binary mode; recovery recognizes legacy CRLF evidence sizes.
+Session/evidence creation and atomic metadata replacement flush their containing directories on platforms that expose directory `fsync`. Windows retains atomic replacement and file-flush guarantees without claiming portable directory-flush behavior. New Windows evidence uses binary mode; recovery recognizes legacy CRLF evidence sizing, with a size-based compatibility tolerance that may accept another same-sized modification until a later scan detects the inconsistency. Invalid or corrupt session directories use directory mtime only as fallback ordering, never as trusted session creation time.
 
 ## Security and network boundary
 
@@ -52,7 +52,7 @@ The public GHCR image supports a direct one-service deployment with an explicit 
 browser -> NAS:published-port -> DragonSniff container:8765 -> authorized Dragon
 ```
 
-DragonSniff now validates the real NAS authority directly. The one-service topology has passed a live no-Caddy smoke test, and the former Caddy header-rewrite shim has been retired. See the [Portainer guide](portainer.md) for the complete stack and validation details.
+The one-service topology has passed a live trusted-LAN smoke test on a reference NAS deployment. See the [Portainer guide](portainer.md) for the complete stack and validation details.
 
 The published runtime platform is currently Linux/amd64. The image is available as `latest` and an immutable `sha-<full-commit-sha>` tag.
 
