@@ -12,6 +12,7 @@ from typing import Any, Callable, Iterator
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from ._version import __version__
 from .recording import SessionRecorder
 from .target import DeviceTarget
 
@@ -133,7 +134,7 @@ class DragonClient:
             headers={
                 "Accept": "application/json, text/event-stream",
                 "Cache-Control": "no-store",
-                "User-Agent": "DragonSniff/0.1",
+                "User-Agent": f"DragonSniff/{__version__}",
             },
         )
 

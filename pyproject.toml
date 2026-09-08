@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dragonsniff"
-version = "0.2.0"
+dynamic = ["version"]
 description = "Local observability tooling for Dragon-family devices"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -17,3 +17,6 @@ dragonsniff = "dragonsniff.__main__:main"
 
 [tool.setuptools.package-data]
 dragonsniff = ["web/*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "dragonsniff._version.__version__"}
