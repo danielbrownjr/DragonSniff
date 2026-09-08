@@ -15,6 +15,9 @@ from uuid import uuid4
 from .annotations import (
     MAX_CAPTURE_ANNOTATIONS,
     AnnotationConflictError,
+    AnnotationIdentityMismatchError,
+    AnnotationLimitError,
+    AnnotationNotRunningError,
     AnnotationRequest,
 )
 from .client import DragonClient
@@ -273,7 +276,7 @@ class CaptureRunner:
         """Persist one idempotent operator-time marker without contacting the DUT."""
         with self._lock:
             if request.run_id != self.run_id:
-                raise AnnotationConflictError(
+                raise AnnotationIdentityMismatchError(
                     "annotation run_id does not match the current capture"
                 )
             capture_session_id = getattr(self.recorder, "session_id", None)
@@ -281,7 +284,7 @@ class CaptureRunner:
                 request.capture_session_id is not None
                 and request.capture_session_id != capture_session_id
             ):
-                raise AnnotationConflictError(
+                raise AnnotationIdentityMismatchError(
                     "annotation capture_session_id does not match the current capture"
                 )
             normalized_request = request.for_capture(capture_session_id)
@@ -321,11 +324,11 @@ class CaptureRunner:
                     self._state["last_annotation"] = deepcopy(durable)
                     return False, deepcopy(durable)
             if self._state["state"] != "running":
-                raise AnnotationConflictError(
+                raise AnnotationNotRunningError(
                     "annotations are accepted only while a capture is running"
                 )
             if len(self._annotations) >= self._annotation_limit:
-                raise AnnotationConflictError("capture annotation limit reached")
+                raise AnnotationLimitError("capture annotation limit reached")
 
             fields: dict[str, Any] = {
                 "annotation_id": request.annotation_id,

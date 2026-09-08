@@ -299,6 +299,43 @@ class SessionStore:
                         return deepcopy(record)
         return None
 
+    def find_annotations(self, annotation_id: object) -> list[dict[str, Any]]:
+        """Find every retained capture record for a recovery UUID."""
+        if not isinstance(annotation_id, str):
+            return []
+        matches: list[dict[str, Any]] = []
+        with self._lock:
+            sessions = sorted(
+                (
+                    metadata
+                    for metadata in self._metadata.values()
+                    if metadata.get("kind") == "capture"
+                ),
+                key=lambda metadata: (
+                    metadata.get("created_at", ""),
+                    metadata.get("session_id", ""),
+                ),
+            )
+            for metadata in sessions:
+                session_id = metadata["session_id"]
+                path = self._evidence_path(session_id)
+                if not path.is_file() or path.is_symlink():
+                    continue
+                with path.open("rb") as stream:
+                    for line in stream:
+                        try:
+                            record = json.loads(line)
+                        except (json.JSONDecodeError, UnicodeDecodeError):
+                            continue
+                        if (
+                            isinstance(record, dict)
+                            and record.get("kind") == "operator_annotation"
+                            and record.get("annotation_id") == annotation_id
+                            and record.get("capture_session_id") == session_id
+                        ):
+                            matches.append(deepcopy(record))
+        return matches
+
     def storage_summary(self) -> dict[str, int]:
         """Report all canonical retained storage, including invalid sessions."""
         with self._lock:

@@ -45,8 +45,38 @@ CORRELATION_FIELDS = frozenset(
 )
 
 
-class AnnotationConflictError(RuntimeError):
-    """The requested annotation cannot be applied to the current capture."""
+class AnnotationProtocolError(RuntimeError):
+    """A stable machine-readable annotation protocol failure."""
+
+    code = "annotation_conflict"
+
+
+class AnnotationConflictError(AnnotationProtocolError):
+    """An annotation UUID was reused with different logical content."""
+
+
+class AnnotationResolutionError(AnnotationProtocolError):
+    """Previously submitted annotation evidence cannot be resolved uniquely."""
+
+    code = "annotation_resolution_failed"
+
+
+class AnnotationLimitError(AnnotationProtocolError):
+    """The active capture has recorded its maximum annotation count."""
+
+    code = "annotation_limit_reached"
+
+
+class AnnotationIdentityMismatchError(AnnotationProtocolError):
+    """Request capture identity does not match authoritative evidence."""
+
+    code = "annotation_identity_mismatch"
+
+
+class AnnotationNotRunningError(AnnotationProtocolError):
+    """A new annotation was attempted outside a running capture."""
+
+    code = "annotation_not_running"
 
 
 def _validate_utf8_text(name: str, value: str) -> None:

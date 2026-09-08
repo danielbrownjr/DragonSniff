@@ -192,6 +192,7 @@ async function localRequest(path, options = {}) {
   if (!response.ok) {
     const error = new Error(payload.message || payload.error || `HTTP ${response.status}`);
     error.status = response.status;
+    error.code = payload.error;
     throw error;
   }
   return payload;

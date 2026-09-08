@@ -62,7 +62,8 @@ The resulting JSONL supports later analysis of temperatures, targets, requested 
 - 5–300 second health interval bounds
 - Maximum 25,000 estimated scheduled records; each normal capture recorder also
   reserves space for up to 1,000 operator annotations so markers do not displace
-  nominal telemetry evidence
+  nominal telemetry evidence. Memory-only and persistent capture paths use the
+  same `estimated_records + 1,000` capacity rule.
 - Stop prevents future samples and retains everything already observed
 
 An in-flight read remains bounded by the existing client request timeout. While it finishes, the run truthfully remains `stopping`; a replacement observation, churn run, or capture cannot start.

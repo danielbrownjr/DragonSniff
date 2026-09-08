@@ -11,7 +11,11 @@ from uuid import uuid4
 
 from dragonsniff.annotations import (
     AnnotationConflictError,
+    AnnotationIdentityMismatchError,
+    AnnotationLimitError,
+    AnnotationNotRunningError,
     AnnotationRequest,
+    AnnotationResolutionError,
     MAX_KNOWN_OFFSET_MS,
     QUICK_MARKERS,
 )
@@ -248,10 +252,12 @@ class AnnotationTests(TestCase):
             stale = AnnotationRequest.from_value(
                 {**value, "capture_session_id": uuid4().hex}
             )
-            with self.assertRaisesRegex(AnnotationConflictError, "capture_session_id"):
+            with self.assertRaisesRegex(
+                AnnotationIdentityMismatchError, "capture_session_id"
+            ):
                 runner.record_annotation(stale)
 
-    def test_persistent_restart_recovers_original_annotation_once(self) -> None:
+    def test_lost_response_restart_recovers_null_session_annotation_once(self) -> None:
         with TemporaryDirectory() as temporary:
             config = CaptureConfig(
                 duration_seconds=10,
@@ -265,11 +271,14 @@ class AnnotationTests(TestCase):
                 config.estimated_records() + CaptureRunner.MAX_ANNOTATIONS,
             )
             runner = active_runner(recorder=recorder)
-            value = annotation_value(
-                runner,
-                "scope_trigger",
-                note="CH1 rising, 3.3 V",
-            )
+            value = {
+                **annotation_value(
+                    runner,
+                    "scope_trigger",
+                    note="CH1 rising, 3.3 V",
+                ),
+                "capture_session_id": None,
+            }
             _, original = runner.record_annotation(
                 AnnotationRequest.from_value(value)
             )
@@ -281,6 +290,14 @@ class AnnotationTests(TestCase):
             )
             manager = SessionManager(store=recovered)
             created, retried, _ = manager.add_capture_annotation(value)
+            with self.assertRaisesRegex(AnnotationConflictError, "different content"):
+                manager.add_capture_annotation({**value, "note": "different"})
+            with self.assertRaisesRegex(
+                AnnotationIdentityMismatchError, "capture_session_id"
+            ):
+                manager.add_capture_annotation(
+                    {**value, "capture_session_id": uuid4().hex}
+                )
             with recovered.lease_evidence(recorder.session_id) as stream:
                 records = [json.loads(line) for line in stream]
 
@@ -292,6 +309,42 @@ class AnnotationTests(TestCase):
             sum(record.get("annotation_id") == value["annotation_id"] for record in records),
             1,
         )
+
+    def test_restart_recovery_rejects_ambiguous_uuid_deterministically(self) -> None:
+        with TemporaryDirectory() as temporary:
+            store = SessionStore(temporary)
+            annotation_id = str(uuid4())
+            run_id = uuid4().hex
+            for target in ("http://one.local", "http://two.local"):
+                recorder = store.create_recorder("capture", target, 10)
+                recorder.append(
+                    "operator_annotation",
+                    annotation_id=annotation_id,
+                    run_id=run_id,
+                    capture_session_id=recorder.session_id,
+                    capture_relative_ms=1.0,
+                    marker="scope_trigger",
+                    note="same logical content",
+                    source="operator",
+                    operator=None,
+                    time_basis="operator_submission_received",
+                )
+            recovered = SessionStore(temporary)
+            manager = SessionManager(store=recovered)
+            value = {
+                "annotation_id": annotation_id,
+                "run_id": run_id,
+                "capture_session_id": None,
+                "marker": "scope_trigger",
+                "note": "same logical content",
+                "operator": None,
+            }
+
+            for _ in range(2):
+                with self.assertRaisesRegex(
+                    AnnotationResolutionError, "ambiguous"
+                ):
+                    manager.add_capture_annotation(value)
 
     def test_unrecorded_interrupted_submission_resolves_not_recorded(self) -> None:
         with TemporaryDirectory() as temporary:
@@ -309,7 +362,7 @@ class AnnotationTests(TestCase):
                 "operator": None,
             }
 
-            with self.assertRaisesRegex(AnnotationConflictError, "was not recorded"):
+            with self.assertRaisesRegex(AnnotationResolutionError, "not recorded"):
                 manager.add_capture_annotation(value)
 
     def test_retry_resolves_write_completed_before_local_failure(self) -> None:
@@ -367,12 +420,12 @@ class AnnotationTests(TestCase):
         for state in ("idle", "stopping", "completed", "cancelled", "failed"):
             with self.subTest(state=state):
                 runner._state["state"] = state
-                with self.assertRaisesRegex(AnnotationConflictError, "only while"):
+                with self.assertRaisesRegex(AnnotationNotRunningError, "only while"):
                     runner.record_annotation(request)
 
         runner._state["state"] = "running"
         stale = AnnotationRequest.from_value({**value, "run_id": uuid4().hex})
-        with self.assertRaisesRegex(AnnotationConflictError, "run_id"):
+        with self.assertRaisesRegex(AnnotationIdentityMismatchError, "run_id"):
             runner.record_annotation(stale)
 
     def test_annotation_limit_is_explicit_and_preserves_telemetry_capacity(self) -> None:
@@ -394,7 +447,7 @@ class AnnotationTests(TestCase):
 
         rejected = AnnotationRequest.from_value(values[-1])
         for _ in range(2):
-            with self.assertRaisesRegex(AnnotationConflictError, "limit reached"):
+            with self.assertRaisesRegex(AnnotationLimitError, "limit reached"):
                 runner.record_annotation(rejected)
 
         telemetry = runner.recorder.append("http_response", sample="after limit")
