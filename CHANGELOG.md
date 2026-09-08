@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.3.0 — 2026-09-08
 
 ### Added
 
@@ -33,11 +33,17 @@
 - Stream historical downloads from a fixed initial file length instead of allocating the complete evidence file in memory.
 - Return `404 session_evidence_not_available` instead of a zero-byte current-session download when no current evidence exists.
 - Preserve every complete record, including a final unmatched request, when startup classifies an unfinished run as `interrupted`.
+- Record malformed HTTP status lines and other HTTP protocol failures as truthful failed samples without aborting a bounded capture or inventing a response.
 
 ### Validation
 
 - Cover resumed exports, cancelled-run restoration, chained automation, shutdown races, route rejection, and capture-budget gating behavior.
 - Cover durable write ordering, crash-window metadata reconciliation, partial-record quarantine, retention, allowlisting, history downloads, and container security defaults.
+- Keep package metadata, the exported module version, and HTTP client/server identifiers on one authoritative version source.
+
+### Known limitations
+
+- HTTPS deployment is not yet supported, and Brave may warn about JSONL downloads over plain LAN HTTP; this remains tracked in Issue #26.
 
 ## v0.2.0 — 2026-09-05
 

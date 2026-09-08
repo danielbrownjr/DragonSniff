@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      release_candidate:
+        description: Publish an immutable SHA-tagged release-candidate image from this ref
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -19,7 +25,9 @@ env:
 jobs:
   publish:
     name: Publish GHCR image
-    if: github.ref == 'refs/heads/main'
+    if: >-
+      github.ref == 'refs/heads/main' ||
+      (github.event_name == 'workflow_dispatch' && inputs.release_candidate)
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -43,7 +51,7 @@ jobs:
         with:
           images: ${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
             type=sha,prefix=sha-,format=long
 
       - name: Build and push image

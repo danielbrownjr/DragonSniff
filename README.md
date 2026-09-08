@@ -157,7 +157,7 @@ python -m unittest discover -s tests -v
 
 ## Status and boundaries
 
-DragonSniff is developer tooling at version 0.2.0. Live observation, bounded SSE churn, passive thermal capture, durable JSONL evidence, restart recovery, bounded retention, local Docker Compose, and direct trusted-LAN Portainer deployment are implemented and validated. Authentication, HTTPS, and public or untrusted-network operation are not.
+DragonSniff is developer tooling at version 0.3.0. Live observation, bounded SSE churn, passive thermal capture, durable JSONL evidence, restart recovery, bounded retention, local Docker Compose, and direct trusted-LAN Portainer deployment are implemented and validated. Authentication, HTTPS, and public or untrusted-network operation are not.
 
 The tool does not provide actuator controls, settings editing, PID tuning, OTA, provisioning, cloud telemetry, or safety policy. Device firmware remains responsible for authentication, validation, interlocks, and safe behavior.
 
