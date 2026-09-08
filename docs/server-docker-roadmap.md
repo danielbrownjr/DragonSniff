@@ -54,7 +54,7 @@ browser -> NAS:published-port -> DragonSniff container:8765 -> authorized Dragon
 
 The one-service topology has passed a live trusted-LAN smoke test on a reference NAS deployment. See the [Portainer guide](portainer.md) for the complete stack and validation details.
 
-The published runtime platform is currently Linux/amd64. The image is available as `latest` and an immutable `sha-<full-commit-sha>` tag.
+The published runtime platform is currently Linux/amd64. Main builds are available under an immutable `sha-<full-commit-sha>` tag; verified releases promote that exact manifest to a version tag and `latest`.
 
 ## Device connectivity
 

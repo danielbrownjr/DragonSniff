@@ -106,7 +106,7 @@ Use `docker compose down` to remove the container while retaining the named volu
 
 ### Portainer / prebuilt image
 
-Main-branch images are published publicly as `ghcr.io/danielbrownjr/dragonsniff:latest` and as an immutable `sha-<full-commit-sha>` tag. `latest` is convenient for routine upgrades; the SHA tag gives a reproducible deployment and rollback point. Portainer should use `image:`, not a remote `build:` context, so neither Git nor a local image build is required on the NAS.
+Main-branch images are published publicly under an immutable `sha-<full-commit-sha>` tag. After release validation, that exact manifest is promoted to the version tag and `latest`; `latest` is convenient for routine upgrades, while the SHA tag gives a reproducible deployment and rollback point. Portainer should use `image:`, not a remote `build:` context, so neither Git nor a local image build is required on the NAS.
 
 See the [direct trusted-LAN Portainer recipe](docs/portainer.md) for the NAS-validated one-service stack with persistent evidence. A reference NAS deployment publishes DragonSniff directly with its configured authority. The package is public, so do not configure a Portainer registry token solely to pull DragonSniff.
 
@@ -159,7 +159,7 @@ python -m unittest discover -s tests -v
 
 ## Status and boundaries
 
-DragonSniff is developer tooling at version 0.3.0. Live observation, bounded SSE churn, passive thermal capture, durable JSONL evidence, restart recovery, bounded retention, local Docker Compose, and direct trusted-LAN Portainer deployment are implemented and validated. Authentication, HTTPS, and public or untrusted-network operation are not.
+DragonSniff is developer tooling at version 0.4.0. Live observation, bounded SSE churn, passive thermal capture, durable operator annotations, durable JSONL evidence, restart recovery, bounded retention, local Docker Compose, and direct trusted-LAN Portainer deployment are implemented and validated. Authentication, HTTPS, and public or untrusted-network operation are not.
 
 The tool does not provide actuator controls, settings editing, PID tuning, OTA, provisioning, cloud telemetry, or safety policy. Device firmware remains responsible for authentication, validation, interlocks, and safe behavior.
 

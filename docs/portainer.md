@@ -52,7 +52,7 @@ The image healthcheck remains `GET http://127.0.0.1:8765/healthz` inside the con
 
 The public image requires no Portainer registry credentials:
 
-- `ghcr.io/danielbrownjr/dragonsniff:latest` follows the newest successful main build.
+- `ghcr.io/danielbrownjr/dragonsniff:latest` follows the newest release whose immutable image passed runtime validation.
 - `ghcr.io/danielbrownjr/dragonsniff:sha-<full-commit-sha>` pins one immutable build.
 
 To upgrade, pull the newest image and redeploy the stack. The named volume preserves evidence. For a reproducible deployment or rollback, replace `latest` with the desired full SHA tag and redeploy; keep the same volume declaration.
