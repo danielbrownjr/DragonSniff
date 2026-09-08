@@ -9,6 +9,7 @@ from unittest.mock import patch
 from dragonsniff.capture import CaptureConfig, CaptureRunner
 from dragonsniff.client import DragonClient
 from dragonsniff.recording import SessionRecorder
+from dragonsniff.server import SessionManager
 from dragonsniff.storage import SessionStore
 from dragonsniff.target import parse_target
 
@@ -93,10 +94,32 @@ class CaptureConfigTests(TestCase):
         config = CaptureConfig.profiles()["Long Haul"]
         runner = CaptureRunner(parse_target("dragon.local"), config)
 
-        self.assertEqual(runner.recorder.max_records, config.estimated_records())
+        self.assertEqual(
+            runner.recorder.max_records,
+            config.estimated_records() + CaptureRunner.MAX_ANNOTATIONS,
+        )
         self.assertGreater(config.estimated_records(), 2_000)
         self.assertLessEqual(
             config.estimated_records(), CaptureConfig.MAX_ESTIMATED_RECORDS
+        )
+
+    def test_memory_and_persistent_capture_paths_reserve_equal_annotation_headroom(
+        self,
+    ) -> None:
+        config = CaptureConfig.profiles()["Smoke"]
+        expected = config.estimated_records() + CaptureRunner.MAX_ANNOTATIONS
+        memory_runner = CaptureRunner(parse_target("dragon.local"), config)
+        with TemporaryDirectory() as temporary:
+            manager = SessionManager(store=SessionStore(temporary))
+            persistent_runner = manager._new_capture(
+                parse_target("dragon.local"), config
+            )
+
+        self.assertEqual(memory_runner.recorder.max_records, expected)
+        self.assertEqual(persistent_runner.recorder.max_records, expected)
+        self.assertEqual(
+            memory_runner.snapshot()["annotation_limit"],
+            persistent_runner.snapshot()["annotation_limit"],
         )
 
     def test_rejects_explicit_recorder_smaller_than_capture_schedule(self) -> None:

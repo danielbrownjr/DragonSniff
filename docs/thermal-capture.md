@@ -30,6 +30,8 @@ Each request and response retains:
 
 Unknown and product-specific fields remain untouched. Missing optional fields do not fail a capture. State or health request failures increment visible counters and remain evidence rather than being converted into invented controller conclusions.
 
+While a capture is running, the Thermal tab can append local operator annotations to the same ordered evidence timeline. Quick-pick markers and exact freeform notes never contact the observed device. Their UTC and capture-relative timestamps represent when DragonSniff received the operator action, not an inferred physical-event time. See [Operator annotations](operator-annotations.md) for the record and retry contract.
+
 `samples_completed` counts state snapshots specifically. Every completed info, state,
 or health fetch also advances `fetches_completed`, and its request/response evidence
 carries that run-local value as `fetch_sequence`.
@@ -58,8 +60,10 @@ The resulting JSONL supports later analysis of temperatures, targets, requested 
 - 1–43,200 second duration bounds
 - 0.5–60 second state interval bounds
 - 5–300 second health interval bounds
-- Maximum 25,000 estimated records; each capture receives a recorder sized to its
-  validated schedule so a nominal run retains its complete evidence
+- Maximum 25,000 estimated scheduled records; each normal capture recorder also
+  reserves space for up to 1,000 operator annotations so markers do not displace
+  nominal telemetry evidence. Memory-only and persistent capture paths use the
+  same `estimated_records + 1,000` capacity rule.
 - Stop prevents future samples and retains everything already observed
 
 An in-flight read remains bounded by the existing client request timeout. While it finishes, the run truthfully remains `stopping`; a replacement observation, churn run, or capture cannot start.

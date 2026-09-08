@@ -16,6 +16,14 @@ from typing import Any, BinaryIO, ContextManager, Iterable
 from urllib.parse import urlsplit
 
 from ._version import __version__
+from .annotations import (
+    MAX_CAPTURE_ANNOTATIONS,
+    AnnotationConflictError,
+    AnnotationIdentityMismatchError,
+    AnnotationProtocolError,
+    AnnotationResolutionError,
+    AnnotationRequest,
+)
 from .capture import CaptureConfig, CaptureRunner
 from .churn import ChurnConfig, ChurnRunner
 from .observer import Observer
@@ -29,6 +37,7 @@ HOSTNAME_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
 
 
 MAX_LOCAL_REQUEST_BYTES = 16_384
+MAX_ANNOTATION_REQUEST_BYTES = 65_536
 LOCAL_POST_PATHS = {
     "/local/v1/session/start",
     "/local/v1/session/stop",
@@ -39,6 +48,7 @@ LOCAL_POST_PATHS = {
     "/local/v1/churn/stop",
     "/local/v1/capture/start",
     "/local/v1/capture/stop",
+    "/local/v1/capture/annotations",
 }
 STATIC_FILES = {
     "/": ("index.html", "text/html; charset=utf-8"),
@@ -330,6 +340,51 @@ class SessionManager:
         completed = capture.stop()
         return completed, self.snapshot()
 
+    def add_capture_annotation(
+        self, value: object
+    ) -> tuple[bool, dict[str, Any], dict[str, Any]]:
+        request = AnnotationRequest.from_value(value)
+        capture = self.current_capture()
+        if capture is None:
+            matches = (
+                self._store.find_annotations(request.annotation_id)
+                if self._store is not None
+                else []
+            )
+            if not matches:
+                raise AnnotationResolutionError(
+                    "annotation was not recorded or is no longer retained"
+                )
+            if len(matches) != 1:
+                raise AnnotationResolutionError(
+                    "annotation_id is ambiguous across retained capture evidence"
+                )
+            existing = matches[0]
+            authoritative_session_id = existing.get("capture_session_id")
+            if not is_valid_session_id(authoritative_session_id):
+                raise AnnotationResolutionError(
+                    "stored annotation has invalid capture identity"
+                )
+            if (
+                request.capture_session_id is not None
+                and request.capture_session_id != authoritative_session_id
+            ):
+                raise AnnotationIdentityMismatchError(
+                    "annotation capture_session_id does not match stored evidence"
+                )
+            if request.run_id != existing.get("run_id"):
+                raise AnnotationIdentityMismatchError(
+                    "annotation run_id does not match stored evidence"
+                )
+            normalized_request = request.for_capture(authoritative_session_id)
+            if not normalized_request.matches_record(existing):
+                raise AnnotationConflictError(
+                    "annotation_id was already used with different content"
+                )
+            return False, existing, self.snapshot()
+        created, record = capture.record_annotation(request)
+        return created, record, self.snapshot()
+
     def current_capture(self) -> CaptureRunner | None:
         with self._lock:
             return self._capture
@@ -542,7 +597,9 @@ class SessionManager:
             target,
             config,
             recorder=self._store.create_recorder(
-                "capture", target.base_url, config.estimated_records()
+                "capture",
+                target.base_url,
+                config.estimated_records() + MAX_CAPTURE_ANNOTATIONS,
             ),
         )
 
@@ -624,6 +681,9 @@ class SessionManager:
             "start_timestamp": None,
             "end_timestamp": None,
             "elapsed_ms": 0.0,
+            "annotation_count": 0,
+            "annotation_limit": MAX_CAPTURE_ANNOTATIONS,
+            "last_annotation": None,
             "active_device_connections": 0,
             "device_connection_limit": 1,
             "recorder": {
@@ -833,7 +893,12 @@ class DragonSniffHandler(BaseHTTPRequestHandler):
         if not self._validate_json_content_type():
             return
         try:
-            body = self._read_json_body()
+            maximum_body_bytes = (
+                MAX_ANNOTATION_REQUEST_BYTES
+                if path == "/local/v1/capture/annotations"
+                else MAX_LOCAL_REQUEST_BYTES
+            )
+            body = self._read_json_body(maximum_body_bytes)
             if path == "/local/v1/session/start":
                 target = body.get("target")
                 if not isinstance(target, str):
@@ -872,6 +937,25 @@ class DragonSniffHandler(BaseHTTPRequestHandler):
             elif path == "/local/v1/capture/stop":
                 completed, result = self.manager.stop_capture()
                 self._send_json(200 if completed else 202, result)
+            elif path == "/local/v1/capture/annotations":
+                try:
+                    created, annotation, snapshot = (
+                        self.manager.add_capture_annotation(body)
+                    )
+                except AnnotationProtocolError as exc:
+                    self._send_json(
+                        409,
+                        {"error": exc.code, "message": str(exc)},
+                    )
+                else:
+                    self._send_json(
+                        201 if created else 200,
+                        {
+                            "created": created,
+                            "annotation": annotation,
+                            "snapshot": snapshot,
+                        },
+                    )
             else:
                 self._send_json(404, {"error": "not_found"})
         except (TargetValidationError, ValueError, RuntimeError) as exc:
@@ -913,13 +997,13 @@ class DragonSniffHandler(BaseHTTPRequestHandler):
             return False
         return True
 
-    def _read_json_body(self) -> dict[str, Any]:
+    def _read_json_body(self, maximum_bytes: int) -> dict[str, Any]:
         raw_length = self.headers.get("Content-Length", "0")
         try:
             length = int(raw_length)
         except ValueError as exc:
             raise ValueError("invalid Content-Length") from exc
-        if length < 0 or length > MAX_LOCAL_REQUEST_BYTES:
+        if length < 0 or length > maximum_bytes:
             raise ValueError("request body is too large")
         if length == 0:
             return {}

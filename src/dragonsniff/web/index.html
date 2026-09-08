@@ -142,6 +142,39 @@
         </div>
       </form>
       <p id="captureNotice" class="notice" role="status" aria-live="polite"></p>
+      <section class="annotation-panel" aria-labelledby="annotation-heading">
+        <div class="annotation-heading">
+          <div>
+            <p class="eyebrow">Local operator evidence</p>
+            <h3 id="annotation-heading">Mark the capture</h3>
+            <p>Markers are recorded when DragonSniff receives them. They identify operator time, not the exact instant of the physical event, and never send a request to the observed device.</p>
+          </div>
+          <strong id="annotationCount">0 / 1000</strong>
+        </div>
+        <div id="annotationQuickPicks" class="annotation-quick-picks" role="group" aria-label="Quick capture markers"></div>
+        <form id="annotationForm" class="annotation-form">
+          <label for="annotationNote">Freeform note
+            <textarea id="annotationNote" maxlength="2048" rows="2" placeholder="Observed behavior, measurement, units, or context"></textarea>
+          </label>
+          <label for="annotationOperator">Operator (optional)
+            <input id="annotationOperator" type="text" maxlength="128" autocomplete="name">
+          </label>
+          <details class="annotation-correlation">
+            <summary>External instrument correlation</summary>
+            <div class="annotation-correlation-grid">
+              <label for="annotationInstrument">Instrument<input id="annotationInstrument" type="text" maxlength="512"></label>
+              <label for="annotationFileReference">File/reference<input id="annotationFileReference" type="text" maxlength="512"></label>
+              <label for="annotationClockSync">Clock-sync method<input id="annotationClockSync" type="text" maxlength="512"></label>
+              <label for="annotationKnownOffset">Known offset (ms)<input id="annotationKnownOffset" type="number" step="any"></label>
+            </div>
+          </details>
+          <div class="actions">
+            <button id="annotationNoteButton" type="submit">Add operator note</button>
+            <span id="annotationNotice" class="copy-feedback" role="status" aria-live="polite"></span>
+          </div>
+        </form>
+        <p id="annotationLatest" class="annotation-latest">No operator marker recorded in this capture.</p>
+      </section>
       <div class="churn-metrics" aria-label="Capture run summary">
         <div><span>State samples</span><strong id="captureSamples">0</strong></div>
         <div><span>State failures</span><strong id="captureStateFailures">0</strong></div>

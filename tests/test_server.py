@@ -7,10 +7,13 @@ from threading import Event, Thread
 import time
 from unittest import TestCase
 from unittest.mock import patch
+from uuid import uuid4
 
 from dragonsniff.capture import CaptureConfig
 from dragonsniff.recording import SessionRecorder
 from dragonsniff.server import (
+    MAX_ANNOTATION_REQUEST_BYTES,
+    MAX_LOCAL_REQUEST_BYTES,
     DragonSniffHandler,
     DragonSniffServer,
     SessionManager,
@@ -43,11 +46,20 @@ class LocalServerFixture:
         body: object | None = None,
         headers: dict[str, str] | None = None,
     ) -> tuple[int, bytes, str]:
-        connection = HTTPConnection("127.0.0.1", self.server.server_port, timeout=2)
         encoded = None if body is None else json.dumps(body).encode()
-        request_headers = {} if encoded is None else {"Content-Type": "application/json"}
+        return self.request_bytes(method, path, encoded, headers)
+
+    def request_bytes(
+        self,
+        method: str,
+        path: str,
+        body: bytes | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> tuple[int, bytes, str]:
+        connection = HTTPConnection("127.0.0.1", self.server.server_port, timeout=2)
+        request_headers = {} if body is None else {"Content-Type": "application/json"}
         request_headers.update(headers or {})
-        connection.request(method, path, encoded, request_headers)
+        connection.request(method, path, body, request_headers)
         response = connection.getresponse()
         result = (response.status, response.read(), response.getheader("Content-Type"))
         connection.close()
@@ -305,8 +317,9 @@ class ServerTests(TestCase):
     def test_static_ui_explains_direct_file_use_and_exposes_copy_controls(self) -> None:
         with LocalServerFixture() as local:
             status, body, _ = local.request("GET", "/")
-            app_status, _, _ = local.request("GET", "/app.js")
+            app_status, app_body, _ = local.request("GET", "/app.js")
         html = body.decode()
+        app_js = app_body.decode()
         self.assertEqual(status, 200)
         self.assertEqual(app_status, 200)
         self.assertIn("DragonSniff is not a standalone HTML file", html)
@@ -327,6 +340,17 @@ class ServerTests(TestCase):
         self.assertIn('id="thermal-heading">Thermals', html)
         self.assertIn('id="pidGauge"', html)
         self.assertIn('id="pidGaugeNeedle"', html)
+        self.assertIn('id="annotationQuickPicks"', html)
+        self.assertIn('id="annotationNote"', html)
+        self.assertIn("never send a request to the observed device", html)
+        self.assertEqual(
+            app_js.count(
+                'document.querySelector("#annotationForm").addEventListener("submit"'
+            ),
+            1,
+        )
+        self.assertEqual(app_js.count("recoverPendingAnnotation();"), 1)
+        self.assertEqual(app_js.count("renderAnnotation(capture);"), 1)
         self.assertIn('data-page="thermal"', html)
         self.assertIn('data-page="churn"', html)
         self.assertIn('data-page="history"', html)
@@ -760,6 +784,260 @@ class ServerTests(TestCase):
         self.assertEqual(capture_status, 200)
         self.assertTrue(
             any(record["kind"] == "capture_run_completed" for record in capture_records)
+        )
+
+    def test_capture_annotation_is_local_durable_idempotent_and_survives_reconnect(self) -> None:
+        with TemporaryDirectory() as temporary:
+            request_log = []
+            manager = SessionManager(store=SessionStore(temporary))
+            with (
+                DeviceFixture({"request_log": request_log, "quiet_seconds": 0.1}) as device,
+                LocalServerFixture(manager) as local,
+            ):
+                local.request("POST", "/local/v1/session/start", {"target": device.target})
+                _, start_body, _ = local.request(
+                    "POST",
+                    "/local/v1/capture/start",
+                    {
+                        "target": device.target,
+                        "configuration": {
+                            "duration_seconds": 10,
+                            "state_interval_seconds": 1,
+                            "health_interval_seconds": 5,
+                        },
+                    },
+                )
+                capture = json.loads(start_body)["capture"]
+                annotation = {
+                    "annotation_id": str(uuid4()),
+                    "run_id": capture["run_id"],
+                    "capture_session_id": None,
+                    "marker": "fan_blocked",
+                    "note": "blocked to 50%; ΔP 14 Pa",
+                    "operator": "Daniel",
+                }
+
+                first_status, first_body, _ = local.request(
+                    "POST", "/local/v1/capture/annotations", annotation
+                )
+                retry_status, retry_body, _ = local.request(
+                    "POST", "/local/v1/capture/annotations", annotation
+                )
+                _, reload_body, _ = local.request("GET", "/local/v1/session")
+                reload_retry_status, reload_retry_body, _ = local.request(
+                    "POST", "/local/v1/capture/annotations", annotation
+                )
+                local.request("POST", "/local/v1/capture/stop", {})
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline:
+                    _, body, _ = local.request("GET", "/local/v1/session")
+                    snapshot = json.loads(body)
+                    if snapshot["active_mode"] == "observation":
+                        break
+                    time.sleep(0.01)
+                local.request("POST", "/local/v1/session/reconnect-events", {})
+                export_status, exported, _ = local.request(
+                    "GET", "/local/v1/capture/export"
+                )
+
+            first = json.loads(first_body)
+            retry = json.loads(retry_body)
+            reloaded = json.loads(reload_body)
+            reload_retry = json.loads(reload_retry_body)
+            records = [json.loads(line) for line in exported.splitlines()]
+
+        self.assertEqual(
+            (first_status, retry_status, reload_retry_status, export_status),
+            (201, 200, 200, 200),
+        )
+        self.assertTrue(first["created"])
+        self.assertFalse(retry["created"])
+        self.assertEqual(first["annotation"], retry["annotation"])
+        self.assertEqual(first["annotation"], reload_retry["annotation"])
+        self.assertEqual(
+            first["annotation"]["capture_session_id"],
+            capture["recorder"]["persistent_session_id"],
+        )
+        self.assertEqual(reloaded["capture"]["annotation_count"], 1)
+        self.assertEqual(
+            reloaded["capture"]["last_annotation"]["note"], annotation["note"]
+        )
+        self.assertEqual(
+            sum(record.get("annotation_id") == annotation["annotation_id"] for record in records),
+            1,
+        )
+        self.assertTrue(request_log)
+        self.assertEqual({method for method, _ in request_log}, {"GET"})
+
+    def test_capture_annotation_endpoint_rejects_invalid_or_inactive_requests(self) -> None:
+        with LocalServerFixture() as local:
+            invalid_status, invalid_body, _ = local.request(
+                "POST",
+                "/local/v1/capture/annotations",
+                {"annotation_id": "not-a-uuid"},
+            )
+            inactive_status, inactive_body, _ = local.request(
+                "POST",
+                "/local/v1/capture/annotations",
+                {
+                    "annotation_id": str(uuid4()),
+                    "run_id": uuid4().hex,
+                    "capture_session_id": None,
+                    "marker": "abort",
+                    "note": "",
+                    "operator": None,
+                },
+            )
+
+        self.assertEqual(invalid_status, 400)
+        self.assertEqual(json.loads(invalid_body)["error"], "invalid_request")
+        self.assertEqual(inactive_status, 409)
+        self.assertEqual(
+            json.loads(inactive_body)["error"], "annotation_resolution_failed"
+        )
+
+    def test_annotation_endpoint_exposes_stable_protocol_error_codes(self) -> None:
+        manager = SessionManager()
+        with DeviceFixture() as device, LocalServerFixture(manager) as local:
+            _, start_body, _ = local.request(
+                "POST",
+                "/local/v1/capture/start",
+                {
+                    "target": device.target,
+                    "configuration": {
+                        "duration_seconds": 10,
+                        "state_interval_seconds": 1,
+                        "health_interval_seconds": 5,
+                    },
+                },
+            )
+            capture = json.loads(start_body)["capture"]
+            annotation = {
+                "annotation_id": str(uuid4()),
+                "run_id": capture["run_id"],
+                "capture_session_id": None,
+                "marker": "baseline_start",
+                "note": "",
+                "operator": None,
+            }
+            created_status, _, _ = local.request(
+                "POST", "/local/v1/capture/annotations", annotation
+            )
+            conflict_status, conflict_body, _ = local.request(
+                "POST",
+                "/local/v1/capture/annotations",
+                {**annotation, "note": "changed"},
+            )
+            identity_status, identity_body, _ = local.request(
+                "POST",
+                "/local/v1/capture/annotations",
+                {**annotation, "annotation_id": str(uuid4()), "run_id": uuid4().hex},
+            )
+            runner = manager.current_capture()
+            runner._annotation_limit = runner.snapshot()["annotation_count"]
+            limit_status, limit_body, _ = local.request(
+                "POST",
+                "/local/v1/capture/annotations",
+                {**annotation, "annotation_id": str(uuid4())},
+            )
+            local.request("POST", "/local/v1/capture/stop", {})
+            stopped_status, stopped_body, _ = local.request(
+                "POST",
+                "/local/v1/capture/annotations",
+                {**annotation, "annotation_id": str(uuid4())},
+            )
+
+        self.assertEqual(created_status, 201)
+        self.assertEqual(conflict_status, 409)
+        self.assertEqual(json.loads(conflict_body)["error"], "annotation_conflict")
+        self.assertEqual(identity_status, 409)
+        self.assertEqual(
+            json.loads(identity_body)["error"], "annotation_identity_mismatch"
+        )
+        self.assertEqual(limit_status, 409)
+        self.assertEqual(
+            json.loads(limit_body)["error"], "annotation_limit_reached"
+        )
+        self.assertEqual(stopped_status, 409)
+        self.assertEqual(
+            json.loads(stopped_body)["error"], "annotation_not_running"
+        )
+
+    def test_annotation_body_limit_accepts_all_legal_unicode_serializations(
+        self,
+    ) -> None:
+        self.assertGreater(MAX_ANNOTATION_REQUEST_BYTES, MAX_LOCAL_REQUEST_BYTES)
+        with DeviceFixture() as device, LocalServerFixture() as local:
+            _, start_body, _ = local.request(
+                "POST",
+                "/local/v1/capture/start",
+                {
+                    "target": device.target,
+                    "configuration": {
+                        "duration_seconds": 10,
+                        "state_interval_seconds": 1,
+                        "health_interval_seconds": 5,
+                    },
+                },
+            )
+            capture = json.loads(start_body)["capture"]
+            cases = (
+                ("ascii-escaped", "A" * 2_048, True),
+                ("ascii-literal", "A" * 2_048, False),
+                ("bmp-escaped", "界" * 2_048, True),
+                ("bmp-literal", "界" * 2_048, False),
+                ("supplementary-escaped", "😀" * 2_048, True),
+                ("supplementary-literal", "😀" * 2_048, False),
+            )
+            sizes = {}
+            for label, note, ensure_ascii in cases:
+                annotation = {
+                    "annotation_id": str(uuid4()),
+                    "run_id": capture["run_id"],
+                    "capture_session_id": None,
+                    "marker": "operator_note",
+                    "note": note,
+                    "operator": None,
+                }
+                encoded = json.dumps(
+                    annotation,
+                    ensure_ascii=ensure_ascii,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                sizes[label] = len(encoded)
+                status, body, _ = local.request_bytes(
+                    "POST", "/local/v1/capture/annotations", encoded
+                )
+                self.assertEqual(status, 201, (label, body))
+
+            too_long = {
+                "annotation_id": str(uuid4()),
+                "run_id": capture["run_id"],
+                "capture_session_id": None,
+                "marker": "operator_note",
+                "note": "A" * 2_049,
+                "operator": None,
+            }
+            too_long_status, too_long_body, _ = local.request_bytes(
+                "POST",
+                "/local/v1/capture/annotations",
+                json.dumps(too_long, separators=(",", ":")).encode("utf-8"),
+            )
+            unrelated_status, unrelated_body, _ = local.request_bytes(
+                "POST",
+                "/local/v1/session/stop",
+                json.dumps({"padding": "x" * MAX_LOCAL_REQUEST_BYTES}).encode(),
+            )
+
+        self.assertGreater(sizes["supplementary-escaped"], MAX_LOCAL_REQUEST_BYTES)
+        self.assertLessEqual(
+            sizes["supplementary-escaped"], MAX_ANNOTATION_REQUEST_BYTES
+        )
+        self.assertEqual(too_long_status, 400)
+        self.assertIn("2048 characters", json.loads(too_long_body)["message"])
+        self.assertEqual(unrelated_status, 400)
+        self.assertEqual(
+            json.loads(unrelated_body)["message"], "request body is too large"
         )
 
     def test_capture_export_survives_reconnect_and_later_churn(self) -> None:

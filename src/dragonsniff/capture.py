@@ -12,6 +12,14 @@ import time
 from typing import Any
 from uuid import uuid4
 
+from .annotations import (
+    MAX_CAPTURE_ANNOTATIONS,
+    AnnotationConflictError,
+    AnnotationIdentityMismatchError,
+    AnnotationLimitError,
+    AnnotationNotRunningError,
+    AnnotationRequest,
+)
 from .client import DragonClient
 from .recording import SessionRecorder
 from .target import DeviceTarget
@@ -149,6 +157,7 @@ class CaptureRunner:
     """Poll fixed read-only endpoints on a deterministic bounded schedule."""
 
     TERMINAL_STATES = {"completed", "cancelled", "failed"}
+    MAX_ANNOTATIONS = MAX_CAPTURE_ANNOTATIONS
 
     def __init__(
         self,
@@ -165,12 +174,21 @@ class CaptureRunner:
         self.recorder = (
             client.recorder
             if client is not None
-            else (recorder or SessionRecorder(max_records=required_records))
+            else (
+                recorder
+                or SessionRecorder(
+                    max_records=required_records + self.MAX_ANNOTATIONS
+                )
+            )
         )
         if self.recorder.max_records < required_records:
             raise ValueError(
                 "capture recorder is smaller than the estimated record requirement"
             )
+        self._annotation_limit = min(
+            self.MAX_ANNOTATIONS,
+            self.recorder.max_records - required_records,
+        )
         self.client = client or DragonClient(target, self.recorder, connection_limit=1)
         self.run_id = uuid4().hex
         self._lock = Lock()
@@ -178,6 +196,9 @@ class CaptureRunner:
         self._finished = Event()
         self._thread: Thread | None = None
         self._started_ns: int | None = None
+        self._annotations: dict[
+            str, tuple[AnnotationRequest, dict[str, Any]]
+        ] = {}
         self._state: dict[str, Any] = {
             "state": "idle",
             "run_id": self.run_id,
@@ -205,6 +226,9 @@ class CaptureRunner:
             "start_timestamp": None,
             "end_timestamp": None,
             "elapsed_ms": 0.0,
+            "annotation_count": 0,
+            "annotation_limit": self._annotation_limit,
+            "last_annotation": None,
         }
 
     def start(self) -> dict[str, Any]:
@@ -245,6 +269,85 @@ class CaptureRunner:
         if thread is not None and thread is not current_thread():
             thread.join(timeout=max(0.0, timeout))
         return self._finish_if_complete()
+
+    def record_annotation(
+        self, request: AnnotationRequest
+    ) -> tuple[bool, dict[str, Any]]:
+        """Persist one idempotent operator-time marker without contacting the DUT."""
+        with self._lock:
+            if request.run_id != self.run_id:
+                raise AnnotationIdentityMismatchError(
+                    "annotation run_id does not match the current capture"
+                )
+            capture_session_id = getattr(self.recorder, "session_id", None)
+            if (
+                request.capture_session_id is not None
+                and request.capture_session_id != capture_session_id
+            ):
+                raise AnnotationIdentityMismatchError(
+                    "annotation capture_session_id does not match the current capture"
+                )
+            normalized_request = request.for_capture(capture_session_id)
+            previous = self._annotations.get(request.annotation_id)
+            if previous is not None:
+                previous_request, previous_record = previous
+                if previous_request != normalized_request:
+                    raise AnnotationConflictError(
+                        "annotation_id was already used with different content"
+                    )
+                return False, deepcopy(previous_record)
+            store = getattr(self.recorder, "store", None)
+            persistent_metadata = (
+                store.get_session(capture_session_id)
+                if store is not None and capture_session_id is not None
+                else None
+            )
+            persistent_status = (
+                persistent_metadata.get("status")
+                if persistent_metadata is not None
+                else None
+            )
+            if persistent_status is not None and persistent_status != "active":
+                durable = store.find_annotation(
+                    capture_session_id, request.annotation_id
+                )
+                if durable is not None:
+                    if not normalized_request.matches_record(durable):
+                        raise AnnotationConflictError(
+                            "annotation_id was already used with different content"
+                        )
+                    self._annotations[request.annotation_id] = (
+                        normalized_request,
+                        durable,
+                    )
+                    self._state["annotation_count"] = len(self._annotations)
+                    self._state["last_annotation"] = deepcopy(durable)
+                    return False, deepcopy(durable)
+            if self._state["state"] != "running":
+                raise AnnotationNotRunningError(
+                    "annotations are accepted only while a capture is running"
+                )
+            if len(self._annotations) >= self._annotation_limit:
+                raise AnnotationLimitError("capture annotation limit reached")
+
+            fields: dict[str, Any] = {
+                "annotation_id": request.annotation_id,
+                "run_id": self.run_id,
+                "capture_session_id": capture_session_id,
+                "capture_relative_ms": self._elapsed_ms(),
+                "marker": request.marker,
+                "note": request.note,
+                "source": "operator",
+                "operator": request.operator,
+                "time_basis": "operator_submission_received",
+            }
+            if request.external_correlation is not None:
+                fields["external_correlation"] = request.external_correlation
+            record = self.recorder.append("operator_annotation", **fields)
+            self._annotations[request.annotation_id] = (normalized_request, record)
+            self._state["annotation_count"] = len(self._annotations)
+            self._state["last_annotation"] = deepcopy(record)
+            return True, deepcopy(record)
 
     def _run(self) -> None:
         outcome = "completed"
