@@ -1,82 +1,70 @@
-# Server and Docker roadmap
+# Server and container status
 
-DragonSniff already separates its browser UI from device communication, serves packaged static assets, avoids desktop GUI dependencies, and bounds its local request and device-connection workers. Those traits make it a useful headless service today. They do not yet make it a persistent Docker daemon.
+DragonSniff is a persistent, headless-capable service today. This document records the shipped server and container contract and separates it from the remaining work. The README is the primary entry point; the [Portainer guide](portainer.md) is the authoritative trusted-LAN deployment recipe.
 
-## Current runtime model
+## Shipped runtime
 
-- One Python process serves the UI and local JSON actions.
+- One Python process serves the browser UI and local JSON actions.
 - The default listener is `127.0.0.1:8765`.
 - `--bind`, `--port`, and `--log-level` have matching `DRAGONSNIFF_*` environment variables.
-- `--bind 0.0.0.0` is an explicit container mode; browser Host validation remains limited to loopback unless exact additional authorities are configured.
+- `--bind 0.0.0.0` is an explicit container mode. It does not infer trusted browser authorities.
 - `GET /healthz` reports local service availability without requiring a Dragon device.
-- SIGINT and SIGTERM run the existing bounded session cleanup before server close.
-- Static assets resolve from the installed package rather than the current directory.
-- No browser or interactive terminal is required after startup.
+- SIGINT and SIGTERM share one bounded session-cleanup path before server close.
+- Static assets load from the installed package; no browser or interactive terminal is required after startup.
+- Local request workers and device connections have fixed limits.
 
-## Runtime-written data
+## Persistence and recovery
 
-When `--data-dir` is configured, DragonSniff incrementally appends observation, capture, and churn evidence to independent session directories. Without it, the original bounded in-memory behavior remains available for short interactive use.
+With `--data-dir`, each observation, Thermal capture, and Churn run owns a session directory containing `metadata.json` and append-only `evidence.jsonl`. Without it, bounded in-memory operation remains available for short interactive use.
 
-| Data | Current lifetime | Future classification |
-|---|---|---|
-| Active observation records | Bounded memory + optional JSONL | Persistent session data |
-| Completed capture/churn records | Bounded memory + optional JSONL | Persistent session data |
-| JSONL downloads | Browser-selected location | Export, not service state |
-| Logs | Standard output/error | Container log stream |
-| Static assets | Installed package | Read-only image content |
+Each complete JSONL record is flushed before the live recorder reports success. Metadata is cached, checkpointed every 64 records, and synchronously updated on terminal transitions. Startup streams unfinished evidence to reconcile counters, quarantines only an incomplete final record as `evidence.partial`, and marks a previously active run `interrupted`. It never resumes device work or invents a response.
 
-Persistent mode uses `<data-dir>/sessions/<session-id>/metadata.json` plus `evidence.jsonl`. Each JSONL record is appended and `fsync`ed before the live recorder reports success; that valid JSONL prefix is the authoritative evidence. Metadata is cached, checkpointed every 64 records, and synchronously flushed for terminal state. Startup streams active evidence to reconcile counters and uses bounded reverse reads to find and quarantine an incomplete final record as `evidence.partial`. A known append failure is durably classified as `failed` when the filesystem still permits the terminal metadata write; if no further write is possible, the valid JSONL prefix remains recoverable but the last on-disk metadata state is necessarily the limit of what can be guaranteed.
+History keeps `completed`, `cancelled`, `failed`, and `interrupted` distinct. A known error is durably classified as `failed` only when the metadata filesystem permits the terminal write; if storage is completely unwritable, the last durable on-disk metadata is the limit of what can be guaranteed. Retention is bounded by total bytes and session count, protects active and leased downloads, accounts for invalid session directories, and treats deletion failure as retryable housekeeping. A top-level storage traversal failure produces a bounded JSON error rather than a false empty result.
 
-Session/evidence creation and atomic metadata replacement also flush their containing directories on platforms that expose directory `fsync`. Windows does not provide that operation through Python's portable file-descriptor API, so DragonSniff retains atomic replace and file flush guarantees there without claiming a directory-flush guarantee. Retention leases active downloads and treats deletion failure as retryable housekeeping rather than failing a live run.
+Session/evidence creation and atomic metadata replacement flush their containing directories on platforms that expose directory `fsync`. Windows retains atomic replacement and file-flush guarantees without claiming portable directory-flush behavior. New Windows evidence uses binary mode; recovery recognizes legacy CRLF evidence sizing, with a size-based compatibility tolerance that may accept another same-sized modification until a later scan detects the inconsistency. Invalid or corrupt session directories use directory mtime only as fallback ordering, never as trusted session creation time.
 
-Valid-session retention bytes are derived without repeated directory walks from cached actual evidence and metadata file sizes plus any quarantined `evidence.partial` bytes. The evidence size is refreshed with one `fstat()` on the already-open descriptor after every durable append, following the existing `fsync()`; this keeps active accounting exact, and its cost is small relative to the durable write. New Windows evidence descriptors use binary mode so physical and encoded JSONL sizes agree. Startup also accepts the exact one-extra-byte-per-record size of legacy Windows CRLF evidence; this deliberately avoids a full compatibility scan while allowing another modification with that exact size relationship to pass the initial size check. Other size mismatches are streamed and reconciled before caching.
+## Security and network boundary
 
-A canonical session directory whose metadata is malformed, unreadable, or from an unsupported format version is invalid for normal History and download semantics. It is not hidden from storage accounting: its filesystem-measured bytes and one session-count slot remain in the retention budget and in the History API's storage summary. Invalid sessions are eligible for retention removal, using directory modification time only as a fallback ordering value rather than treating it as a trustworthy session creation time. A top-level storage traversal failure makes the History endpoint return a bounded JSON error; it is never reported as a successful empty store.
+DragonSniff makes only fixed read-only requests to authorized Dragon targets. It is not a generic proxy and exposes no device mutation route.
 
-## Implemented Docker-service foundation
+- Localhost and `127.0.0.1` on the listening port are trusted browser authorities by default.
+- `DRAGONSNIFF_ALLOWED_HOSTS` or repeated `--allow-host` values add exact trusted authorities.
+- Wildcards, malformed authorities, unconfigured LAN addresses, and wrong ports remain rejected.
+- Browser POST requests with an `Origin` header require its authority to match the accepted `Host`.
+- A missing Origin remains supported for non-browser clients.
+- Host/Origin validation is a backstop, not authentication. Do not expose DragonSniff to the public internet or another untrusted network.
 
-1. **Incremental evidence persistence.** Records are append-only JSONL and remain bounded in live memory.
-2. **Interrupted-run recovery.** Startup truthfully classifies unfinished sessions without resuming device work.
-3. **Retention.** Stored evidence is bounded by both total bytes and session count.
-4. **Historical sessions.** Read-only API/UI history and downloads remain separate from active state.
-5. **Target allowlist.** Exact normalized Dragon origins may be explicitly permitted; the container requires at least one.
-6. **Container boundary.** The image is non-root and Compose supplies a volume, loopback-only publish, healthcheck, restart policy, read-only root filesystem, and dropped capabilities.
+## Supported deployment topologies
 
-Image build and real container stop/restart validation still require a host with Docker available. The normal host and browser suites validate the underlying persistence, recovery, history, and allowlist behavior without Docker.
+### Local Compose
 
-## Intended container boundary
-
-The first supported deployment remains host-local:
+The repository Compose file builds locally, publishes `127.0.0.1:8765:8765`, runs non-root with a read-only root filesystem and dropped capabilities, and persists `/data` in a named volume.
 
 ```text
-browser -> 127.0.0.1:8765 on host -> container 0.0.0.0:8765 -> authorized Dragon device
+browser -> 127.0.0.1:8765 -> DragonSniff container:8765 -> authorized Dragon
 ```
 
-The image listens on `0.0.0.0` inside its container. The Compose mapping is `127.0.0.1:8765:8765`, not a LAN-wide publish. Running the image with a generic `docker run -p 8765:8765 ...` may publish it beyond loopback depending on Docker and host configuration. Exact trusted-LAN browser authorities can be opted in with `DRAGONSNIFF_ALLOWED_HOSTS`; no authority is inferred from the wildcard bind. Host validation is a browser/network backstop, not authentication, and the service must not be exposed to an untrusted network.
+### Trusted-LAN Portainer
 
-The mounted `/data` path must be writable by the image's non-root user. A pre-existing bind mount or named volume created with different ownership may require an operator to correct that ownership before starting the service.
+The public GHCR image supports a direct one-service deployment with an explicit external browser authority:
 
-The service does not enable CORS. Browser actions must retain matching Host and Origin checks, and the application must remain a fixed read-only Dragon client rather than a generic network proxy.
+```text
+browser -> NAS:published-port -> DragonSniff container:8765 -> authorized Dragon
+```
+
+The one-service topology has passed a live trusted-LAN smoke test on a reference NAS deployment. See the [Portainer guide](portainer.md) for the complete stack and validation details.
+
+The published runtime platform is currently Linux/amd64. The image is available as `latest` and an immutable `sha-<full-commit-sha>` tag.
 
 ## Device connectivity
 
-DragonSniff currently talks to Dragons over HTTP(S), not host USB or serial devices. Container deployments therefore need ordinary LAN reachability to the target.
+DragonSniff talks to Dragons over HTTP(S), not host USB or serial devices. Containers therefore need ordinary network reachability to the target. Direct IP addresses are the most predictable option; `.local`/mDNS resolution may not cross desktop or bridged-container boundaries reliably.
 
-- Direct IP addresses are the most predictable option.
-- `.local`/mDNS resolution may not cross Docker Desktop or bridged-network boundaries reliably.
-- Host networking is platform-specific and should not be the default merely to make discovery convenient.
-- If USB/serial support is ever added, device passthrough and permissions must remain transport configuration, not hard-coded `/dev/tty*` or Windows paths.
+## Remaining work
 
-## Acceptance criteria for the Docker milestone
+- [Issue #10](https://github.com/danielbrownjr/DragonSniff/issues/10): characterize the remaining stale-SSE-write/HTTP-connection corruption report without conflating it with eventual resource cleanup.
+- [Issue #26](https://github.com/danielbrownjr/DragonSniff/issues/26): define a supported HTTPS deployment and resolve or explain the Brave warning for LAN evidence downloads.
+- Add other runtime platforms only after their build and deployment behavior is validated.
+- Authentication and remote multi-user operation remain explicitly deferred; trusted-host configuration does not provide either.
 
-- Image builds reproducibly and runs as a non-root user.
-- Compose publishes only to host loopback by default.
-- `/healthz` passes without a Dragon connected.
-- A mounted data directory receives incremental evidence and no source-tree writes occur.
-- Capture and churn evidence survives browser closure and container restart.
-- Interrupted runs are marked, retained, and downloadable after restart.
-- SIGTERM gives session/worker cleanup one shared 12-second deadline; the supported Compose deployment provides a 20-second grace period to include bounded HTTP handler shutdown.
-- Stop/restart does not corrupt JSONL or silently resume device work.
-- UI/API/session/export tests pass inside and outside the container.
-
-Track implementation in [Issue #7](https://github.com/danielbrownjr/DragonSniff/issues/7).
+No current roadmap item authorizes device mutation, a generic proxy, weaker target allowlisting, or public-internet exposure.
