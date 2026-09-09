@@ -59,6 +59,16 @@ The inspected feature branch contained additional SSE lifecycle diagnostics, but
 
 DragonBreath JSON error responses include product policy state in addition to an error code and message. An unavailable Jump Jet route follows its HTTP server's normal not-found behavior. Network failure, HTTP rejection, malformed JSON, missing routes, and clean SSE end-of-stream are distinct observations in DragonSniff's session.
 
+Raw DUT response text remains authoritative evidence and is retained exactly after
+successful UTF-8 decoding. A syntactically valid JSON response can nevertheless
+decode to Python text containing an unpaired UTF-16 surrogate. DragonSniff
+recursively validates every decoded string, including object keys and nested
+values, before admitting the parsed object to structured state. If any string is
+not UTF-8 encodable, `parsed` is unavailable and `parse_error` identifies the
+structural location without echoing device-controlled text. The raw response is
+still retained unchanged. DragonSniff does not normalize, replace, or invent a
+corrected representation for malformed parsed Unicode.
+
 DragonSniff does not silently substitute polling for SSE. It fetches `/state` during the initial JSON pass and permits explicit refreshes, while leaving the stream's unavailable or closed state visible. The bounded churn runner handles automated stream exercises separately.
 
 ## Architecture consequence
@@ -69,6 +79,11 @@ The backend has fixed read-only device routes, two device-connection permits, bo
 
 SSE connection establishment is bounded to five seconds. Once established, a stream has no DragonSniff application-level inactivity timeout: SSE permits valid quiet streams, and DragonBreath's current two-second telemetry cadence is not assumed to be a family-wide contract. Explicit Stop or Reconnect closes the socket; transport failures remain recorded as errors unless the stream-specific stop condition is set. DragonSniff does not automatically reconnect.
 
-The churn runner reuses these same fixed routes, recorder, parser, timeout semantics, and two-permit client budget. It opens at most one churn-owned SSE connection at a time. The second permit allows a bounded health sample while that stream is open; it is not a claim about device-side stream capacity.
+The churn runner reuses these same fixed routes, recorder, parser, parsed-text
+admission rule, timeout semantics, and two-permit client budget. SSE event data
+and JSON rejection bodies use the same admission rule. It opens at most one
+churn-owned SSE connection at a time. The second permit allows a bounded health
+sample while that stream is open; it is not a claim about device-side stream
+capacity.
 
 Churn records HTTP 503 stream rejection without assuming every 503 has the same product cause. DragonBreath's current valid JSON `busy` response is preserved as one real-world example. Other HTTP statuses, invalid bodies, transport failures, remote EOF, deliberate disconnect, cancellation, and controller failures remain distinguishable evidence.

@@ -25,6 +25,10 @@ class ResponseTooLargeError(RuntimeError):
     pass
 
 
+class UnsafeParsedUnicodeError(ValueError):
+    pass
+
+
 class ConnectionBudget:
     """A visible fixed ceiling for concurrent device connections."""
 
@@ -76,11 +80,41 @@ def _decode(body: bytes) -> tuple[str, str | None]:
         return body.decode("utf-8", errors="replace"), str(exc)
 
 
+def _validate_parsed_text(value: Any, path: str = "$") -> None:
+    """Reject decoded JSON text that cannot safely enter local UTF-8 surfaces.
+
+    Paths use object positions rather than device-controlled keys so the error
+    itself is always safe to serialize. Raw DUT evidence is retained separately
+    and never passes through this structured-value admission check.
+    """
+    if isinstance(value, str):
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise UnsafeParsedUnicodeError(
+                f"parsed JSON contains non-UTF-8-encodable text at {path}"
+            ) from exc
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            _validate_parsed_text(item, f"{path}[{index}]")
+        return
+    if isinstance(value, dict):
+        for index, (key, item) in enumerate(value.items()):
+            _validate_parsed_text(key, f"{path}.keys[{index}]")
+            _validate_parsed_text(item, f"{path}.values[{index}]")
+
+
 def _parse_json(raw: str) -> tuple[Any, str | None]:
     try:
-        return json.loads(raw), None
+        parsed = json.loads(raw)
     except json.JSONDecodeError as exc:
         return None, str(exc)
+    try:
+        _validate_parsed_text(parsed)
+    except UnsafeParsedUnicodeError as exc:
+        return None, str(exc)
+    return parsed, None
 
 
 def _response_socket(response: Any) -> socket.socket | None:
@@ -390,10 +424,7 @@ class DragonClient:
         parsed: Any = None
         parse_error: str | None = None
         if data:
-            try:
-                parsed = json.loads(data)
-            except json.JSONDecodeError as exc:
-                parse_error = str(exc)
+            parsed, parse_error = _parse_json(data)
         return {
             "event": event_name,
             "event_id": event_id,

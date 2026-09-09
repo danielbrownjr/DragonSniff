@@ -314,6 +314,128 @@ class ServerTests(TestCase):
             records = [json.loads(line) for line in export.splitlines()]
             self.assertTrue(any(record["kind"] == "sse_event" for record in records))
 
+    def test_unsafe_device_unicode_remains_raw_and_all_local_surfaces_serialize(self) -> None:
+        responses = {
+            "/api/v2/info": b'{"value":"\\ud800"}',
+            "/api/v2/state": b'{"outer":{"items":["ok","\\udc00"]}}',
+            "/api/v2/health": b'{"\\ud800":"unsafe-key"}',
+        }
+        with TemporaryDirectory() as temporary, DeviceFixture(dict(responses)) as device:
+            store = SessionStore(temporary)
+            manager = SessionManager(store=store, allowed_targets=[device.target])
+            with LocalServerFixture(manager) as local:
+                start_status, start_body, _ = local.request(
+                    "POST", "/local/v1/session/start", {"target": device.target}
+                )
+                session_id = json.loads(start_body)["recorder"]["persistent_session_id"]
+                deadline = time.monotonic() + 2
+                snapshot = {}
+                snapshot_body = b""
+                while time.monotonic() < deadline:
+                    _, snapshot_body, _ = local.request("GET", "/local/v1/session")
+                    snapshot = json.loads(snapshot_body)
+                    if all(
+                        snapshot["http"][path].get("state") == "unavailable"
+                        for path in responses
+                    ):
+                        break
+                    time.sleep(0.01)
+                export_status, current_export, _ = local.request(
+                    "GET", "/local/v1/session/export"
+                )
+                stop_status, _, _ = local.request(
+                    "POST", "/local/v1/session/stop", {}
+                )
+
+            for path, raw in responses.items():
+                result = snapshot["http"][path]
+                self.assertEqual(result["raw_payload"], raw.decode())
+                self.assertIsNone(result["parsed"])
+                self.assertIn("non-UTF-8-encodable text", result["parse_error"])
+            self.assertEqual(start_status, 202)
+            self.assertEqual(export_status, 200)
+            self.assertEqual(stop_status, 200)
+            snapshot_body.decode("utf-8")
+            current_records = [json.loads(line) for line in current_export.splitlines()]
+            recorded_responses = {
+                record["endpoint"]: record
+                for record in current_records
+                if record["kind"] == "http_response"
+            }
+            for path, raw in responses.items():
+                self.assertEqual(recorded_responses[path]["raw_payload"], raw.decode())
+                self.assertIsNone(recorded_responses[path]["parsed"])
+
+            recovered = SessionManager(store=SessionStore(temporary))
+            with LocalServerFixture(recovered) as local:
+                history_status, history_body, _ = local.request(
+                    "GET", "/local/v1/history"
+                )
+                detail_status, detail_body, _ = local.request(
+                    "GET", f"/local/v1/history/{session_id}"
+                )
+                history_export_status, history_export, _ = local.download(
+                    f"/local/v1/history/{session_id}/export"
+                )
+
+        self.assertEqual(
+            (history_status, detail_status, history_export_status), (200, 200, 200)
+        )
+        self.assertEqual(json.loads(history_body)["sessions"][0]["session_id"], session_id)
+        self.assertEqual(json.loads(detail_body)["status"], "completed")
+        recovered_records = [json.loads(line) for line in history_export.splitlines()]
+        recovered_responses = {
+            record["endpoint"]: record
+            for record in recovered_records
+            if record["kind"] == "http_response"
+        }
+        for path, raw in responses.items():
+            self.assertEqual(recovered_responses[path]["raw_payload"], raw.decode())
+            self.assertIsNone(recovered_responses[path]["parsed"])
+
+    def test_valid_unicode_survives_persistence_export_and_browser_payload(self) -> None:
+        raw = '{"emoji":"🚀","text":"日本語 café é"}'.encode()
+        paths = ("/api/v2/info", "/api/v2/state", "/api/v2/health")
+        responses = {path: raw for path in paths}
+        with TemporaryDirectory() as temporary, DeviceFixture(dict(responses)) as device:
+            manager = SessionManager(
+                store=SessionStore(temporary), allowed_targets=[device.target]
+            )
+            with LocalServerFixture(manager) as local:
+                _, start_body, _ = local.request(
+                    "POST", "/local/v1/session/start", {"target": device.target}
+                )
+                session_id = json.loads(start_body)["recorder"]["persistent_session_id"]
+                deadline = time.monotonic() + 2
+                snapshot = {}
+                while time.monotonic() < deadline:
+                    _, snapshot_body, _ = local.request("GET", "/local/v1/session")
+                    snapshot = json.loads(snapshot_body)
+                    if all(
+                        snapshot["http"][path].get("state") == "available"
+                        for path in responses
+                    ):
+                        break
+                    time.sleep(0.01)
+                _, current_export, _ = local.request("GET", "/local/v1/session/export")
+                local.request("POST", "/local/v1/session/stop", {})
+
+            with LocalServerFixture(
+                SessionManager(store=SessionStore(temporary))
+            ) as local:
+                _, recovered_export, _ = local.download(
+                    f"/local/v1/history/{session_id}/export"
+                )
+
+        expected = {"emoji": "🚀", "text": "日本語 café é"}
+        for path in paths:
+            self.assertEqual(snapshot["http"][path]["parsed"], expected)
+            self.assertEqual(snapshot["http"][path]["raw_payload"], raw.decode())
+        self.assertIn("🚀".encode(), current_export)
+        self.assertIn("日本語 café é".encode(), current_export)
+        self.assertIn("🚀".encode(), recovered_export)
+        self.assertIn("日本語 café é".encode(), recovered_export)
+
     def test_static_ui_explains_direct_file_use_and_exposes_copy_controls(self) -> None:
         with LocalServerFixture() as local:
             status, body, _ = local.request("GET", "/")

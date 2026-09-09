@@ -26,9 +26,15 @@ Each request and response retains:
 - run ID, monotonic per-fetch sequence, owner, and sample point
 - endpoint, status, headers, and elapsed time
 - exact raw response text
-- parsed JSON and parsing errors when applicable
+- parsed JSON when every decoded string is UTF-8 encodable, or a deterministic
+  parsing/validation error when structured data is unavailable
 
 Unknown and product-specific fields remain untouched. Missing optional fields do not fail a capture. State or health request failures increment visible counters and remain evidence rather than being converted into invented controller conclusions.
+
+Raw DUT text is evidence even when syntactically valid JSON contains an unpaired
+surrogate escape. In that case the raw text is retained exactly, while the parsed
+object is withheld from structured capture and local API surfaces. The malformed
+text is not repaired or replaced.
 
 While a capture is running, the Thermal tab can append local operator annotations to the same ordered evidence timeline. Quick-pick markers and exact freeform notes never contact the observed device. Their UTC and capture-relative timestamps represent when DragonSniff received the operator action, not an inferred physical-event time. See [Operator annotations](operator-annotations.md) for the record and retry contract.
 
