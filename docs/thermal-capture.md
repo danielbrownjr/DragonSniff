@@ -25,16 +25,20 @@ Each request and response retains:
 - UTC and monotonic timestamps
 - run ID, monotonic per-fetch sequence, owner, and sample point
 - endpoint, status, headers, and elapsed time
-- exact raw response text
-- parsed JSON when every decoded string is UTF-8 encodable, or a deterministic
-  parsing/validation error when structured data is unavailable
+- exact response text when transport bytes decode as strict UTF-8; otherwise a
+  marked replacement-decoded view plus `decode_error`
+- parsed JSON when every decoded string is UTF-8 encodable and the structure is
+  within the local admission depth, or a deterministic parsing/validation error
+  and machine-readable `parse_error_kind` when structured data is unavailable
 
 Unknown and product-specific fields remain untouched. Missing optional fields do not fail a capture. State or health request failures increment visible counters and remain evidence rather than being converted into invented controller conclusions.
 
-Raw DUT text is evidence even when syntactically valid JSON contains an unpaired
-surrogate escape. In that case the raw text is retained exactly, while the parsed
-object is withheld from structured capture and local API surfaces. The malformed
-text is not repaired or replaced.
+Successfully decoded DUT text remains evidence even when syntactically valid JSON
+contains an unpaired surrogate escape. In that case the response text is retained
+exactly, while the parsed object is withheld from structured capture and local API
+surfaces. The malformed parsed text is not repaired or replaced. Invalid transport
+UTF-8 is different: the safe textual field contains replacement characters and is
+explicitly marked by `decode_error`, so it is not claimed as byte-exact evidence.
 
 While a capture is running, the Thermal tab can append local operator annotations to the same ordered evidence timeline. Quick-pick markers and exact freeform notes never contact the observed device. Their UTC and capture-relative timestamps represent when DragonSniff received the operator action, not an inferred physical-event time. See [Operator annotations](operator-annotations.md) for the record and retry contract.
 

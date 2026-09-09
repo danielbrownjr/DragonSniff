@@ -23,7 +23,10 @@
     if (view === "raw") {
       return typeof result.raw_payload === "string" ? result.raw_payload : null;
     }
-    if (result.parse_error || !Object.prototype.hasOwnProperty.call(result, "parsed")) {
+    if (result.parsed_available === false
+        || result.decode_error
+        || result.parse_error
+        || !Object.prototype.hasOwnProperty.call(result, "parsed")) {
       return null;
     }
     const formatted = JSON.stringify(result.parsed, null, 2);

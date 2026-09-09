@@ -159,7 +159,7 @@ class ChurnRunnerTests(TestCase):
             if record["kind"] == "sse_event"
         )
         self.assertIsNone(event["parsed"])
-        self.assertIn("non-UTF-8-encodable text", event["parse_error"])
+        self.assertEqual(event["parse_error_kind"], "unsafe_text")
         runner.recorder.export_jsonl().encode("utf-8")
         self.assert_clean(runner)
 

@@ -219,7 +219,7 @@ class CaptureRunnerTests(TestCase):
         for name in ("latest_info", "latest_state", "latest_health"):
             self.assertEqual(snapshot[name]["raw_payload"], raw.decode())
             self.assertIsNone(snapshot[name]["parsed"])
-            self.assertIn("non-UTF-8-encodable text", snapshot[name]["parse_error"])
+            self.assertEqual(snapshot[name]["parse_error_kind"], "unsafe_text")
         runner.recorder.export_jsonl().encode("utf-8")
         self.assert_clean(runner)
 

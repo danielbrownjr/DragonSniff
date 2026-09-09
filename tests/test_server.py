@@ -335,7 +335,7 @@ class ServerTests(TestCase):
                     _, snapshot_body, _ = local.request("GET", "/local/v1/session")
                     snapshot = json.loads(snapshot_body)
                     if all(
-                        snapshot["http"][path].get("state") == "unavailable"
+                        snapshot["http"][path].get("parse_error_kind") == "unsafe_text"
                         for path in responses
                     ):
                         break
@@ -349,9 +349,13 @@ class ServerTests(TestCase):
 
             for path, raw in responses.items():
                 result = snapshot["http"][path]
+                self.assertEqual(result["state"], "available")
+                self.assertTrue(result["response_received"])
+                self.assertTrue(result["http_ok"])
+                self.assertFalse(result["ok"])
                 self.assertEqual(result["raw_payload"], raw.decode())
                 self.assertIsNone(result["parsed"])
-                self.assertIn("non-UTF-8-encodable text", result["parse_error"])
+                self.assertEqual(result["parse_error_kind"], "unsafe_text")
             self.assertEqual(start_status, 202)
             self.assertEqual(export_status, 200)
             self.assertEqual(stop_status, 200)
@@ -435,6 +439,49 @@ class ServerTests(TestCase):
         self.assertIn("日本語 café é".encode(), current_export)
         self.assertIn("🚀".encode(), recovered_export)
         self.assertIn("日本語 café é".encode(), recovered_export)
+
+    def test_deep_device_json_cannot_escape_into_local_session_or_export(self) -> None:
+        depth = 900
+        raw = ("[" * depth + "0" + "]" * depth).encode()
+        with DeviceFixture({"/api/v2/info": raw}) as device, LocalServerFixture() as local:
+            start_status, _, _ = local.request(
+                "POST", "/local/v1/session/start", {"target": device.target}
+            )
+            deadline = time.monotonic() + 2
+            snapshot = {}
+            snapshot_body = b""
+            while time.monotonic() < deadline:
+                _, snapshot_body, _ = local.request("GET", "/local/v1/session")
+                snapshot = json.loads(snapshot_body)
+                if (
+                    snapshot["http"]["/api/v2/info"].get("parse_error_kind")
+                    == "structure_too_deep"
+                ):
+                    break
+                time.sleep(0.01)
+            export_status, exported, _ = local.request(
+                "GET", "/local/v1/session/export"
+            )
+
+        result = snapshot["http"]["/api/v2/info"]
+        self.assertEqual(start_status, 202)
+        self.assertEqual(result["state"], "available")
+        self.assertTrue(result["http_ok"])
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["parse_error_kind"], "structure_too_deep")
+        self.assertFalse(result["parsed_available"])
+        self.assertEqual(result["raw_payload"], raw.decode())
+        snapshot_body.decode("utf-8")
+        self.assertEqual(export_status, 200)
+        records = [json.loads(line) for line in exported.splitlines()]
+        response = next(
+            record
+            for record in records
+            if record.get("kind") == "http_response"
+            and record.get("endpoint") == "/api/v2/info"
+        )
+        self.assertEqual(response["parse_error_kind"], "structure_too_deep")
+        self.assertEqual(response["raw_payload"], raw.decode())
 
     def test_static_ui_explains_direct_file_use_and_exposes_copy_controls(self) -> None:
         with LocalServerFixture() as local:

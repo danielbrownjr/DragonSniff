@@ -86,7 +86,7 @@ class Observer:
             result = self.client.fetch_json(path)
             with self._lock:
                 self._state["http"][path] = {
-                    "state": "available" if result["ok"] else "unavailable",
+                    "state": "available" if result["http_ok"] else "unavailable",
                     **result,
                 }
         with self._lock:

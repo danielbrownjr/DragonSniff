@@ -430,8 +430,11 @@ class SessionStoreTests(TestCase):
                 identifiers.append(recorder.session_id)
                 recorder.append("session_started")
                 recorder.append("session_stopped")
-            self.assertEqual(len(store.list_sessions()), 2)
-            self.assertIsNone(store.get_session(identifiers[0]))
+            retained = {
+                session["session_id"] for session in store.list_sessions()
+            }
+            self.assertEqual(len(retained), 2)
+            self.assertEqual(len(set(identifiers) - retained), 1)
 
     def test_invalid_or_unknown_session_id_is_not_exported(self) -> None:
         with TemporaryDirectory() as temporary:

@@ -183,10 +183,25 @@ test("unsafe parsed device Unicode stays unavailable while exact raw evidence re
   const result = {
     raw_payload: raw,
     parsed: null,
-    parse_error: "parsed JSON contains non-UTF-8-encodable text at $.values[0][1]",
+    parse_error: "parsed JSON contains non-UTF-8-encodable text",
+    parse_error_kind: "unsafe_text",
+    parsed_available: false,
   };
   assert.equal(payloadText(result, "parsed"), null);
   assert.equal(payloadText(result, "raw"), raw);
+});
+
+test("decode failures never expose replacement-decoded text as parsed JSON", () => {
+  const result = {
+    raw_payload: '{"value":"�"}',
+    parsed: null,
+    parsed_available: false,
+    decode_error: "invalid UTF-8",
+    parse_error: null,
+    parse_error_kind: null,
+  };
+  assert.equal(payloadText(result, "parsed"), null);
+  assert.equal(payloadText(result, "raw"), result.raw_payload);
 });
 
 test("malformed or absent representations are not copyable", () => {
