@@ -102,12 +102,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          [[ "$RELEASE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]
           test "$GITHUB_REF" = "refs/tags/$RELEASE_VERSION"
           test "$(git rev-parse "$GITHUB_REF^{commit}")" = "$RELEASE_SHA"
-          test "$(PYTHONPATH=src python -c 'from dragonsniff._version import __version__; print(__version__)')" = "${RELEASE_VERSION#v}"
-          test "$PROMOTION_TARGET" = version -o "$PROMOTION_TARGET" = latest
+          package_version="$(PYTHONPATH=src python -c 'from dragonsniff._version import __version__; print(__version__)')"
+          python scripts/validate_release_promotion.py \
+            "$RELEASE_VERSION" "$package_version" "$PROMOTION_TARGET"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
