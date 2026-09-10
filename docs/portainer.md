@@ -48,6 +48,22 @@ Multiple exact browser authorities may be comma-separated. DragonSniff also acce
 
 The image healthcheck remains `GET http://127.0.0.1:8765/healthz` inside the container. The named `dragonsniff-data` volume is the durable `/data` boundary and survives container replacement.
 
+## Optional PrusaLink observation
+
+PrusaLink observation is disabled unless both its URL and API key are configured. To enable the fixed, authenticated, read-only `GET /api/v1/status` poll, add these entries to the service. Prefer a permissions-restricted secret file on the NAS over placing the key directly in the stack environment:
+
+```yaml
+    environment:
+      DRAGONSNIFF_PRUSALINK_URL: "http://PRUSA_IP"
+      DRAGONSNIFF_PRUSALINK_API_KEY_FILE: "/run/secrets/prusalink_api_key"
+      DRAGONSNIFF_PRUSALINK_POLL_INTERVAL: "5"
+    volumes:
+      - dragonsniff-data:/data
+      - /absolute/NAS/path/prusalink_api_key:/run/secrets/prusalink_api_key:ro
+```
+
+These lines extend the matching `environment` and `volumes` sections in the stack above; do not create duplicate YAML keys. The direct `DRAGONSNIFF_PRUSALINK_API_KEY` environment variable is intended for trusted development use. PrusaLink authentication protects the printer request only—it does not add authentication to DragonSniff. Keep DragonSniff on a trusted network and do not expose it to untrusted clients. See [Optional PrusaLink observations](prusalink-observation.md) for captured fields, freshness, failure, and retention semantics.
+
 ## Image choice, upgrades, and rollback
 
 The public image requires no Portainer registry credentials:
