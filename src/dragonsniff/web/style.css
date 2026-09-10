@@ -91,7 +91,7 @@ code, pre, .eyebrow, .timing, .metric strong, .endpoint-heading h2 {
   vertical-align: .08em;
 }
 [data-status="open"], [data-status="available"], [data-status="completed"], [data-status="healthy"] { --status-color: var(--ok); color: var(--ok); }
-[data-status="internal_error"] { --status-color: var(--error); color: var(--error); }
+[data-status="internal_error"] { --status-color: var(--bad); color: var(--bad); }
 [data-status="connecting"], [data-status="requesting"], [data-status="running"], [data-status="settling"], [data-status="observing"] { --status-color: var(--primary); color: var(--primary); }
 [data-status="unavailable"], [data-status="closed"], [data-status="stopping"], [data-status="cancelled"], [data-status="stale"], [data-status="paused"] { --status-color: var(--warn); color: var(--warn); }
 [data-status="error"], [data-status="failed"], [data-status="auth_error"], [data-status="transport_error"], [data-status="parse_error"] { --status-color: var(--bad); color: var(--bad); }
