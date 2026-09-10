@@ -241,6 +241,59 @@
     };
   }
 
+  function prusalinkSummary(source) {
+    if (!source || source.configured !== true) {
+      return {
+        configured: false,
+        status: "Disabled",
+        connection: "Not configured",
+        printer: "—",
+        bed: "—",
+        freshness: "No sample",
+        error: null,
+      };
+    }
+    const data = source.data && typeof source.data === "object" ? source.data : {};
+    const finite = (value) => typeof value === "number" && Number.isFinite(value);
+    const bed = finite(data.bed_temperature_c) && finite(data.bed_target_c)
+      ? `${data.bed_temperature_c.toFixed(1)} / ${data.bed_target_c.toFixed(1)} °C`
+      : "—";
+    const age = source.freshness?.sample_age_ms;
+    const freshness = source.freshness?.state === "stale"
+      ? `Stale${finite(age) ? ` · ${(age / 1000).toFixed(1)} s old` : ""}`
+      : source.freshness?.state === "fresh"
+        ? `Fresh${finite(age) ? ` · ${(age / 1000).toFixed(1)} s old` : ""}`
+        : "No sample";
+    const labels = {
+      configured: "Configured",
+      connecting: "Connecting",
+      healthy: "Healthy",
+      stale: "Stale",
+      auth_error: "Authentication error",
+      transport_error: "Transport error",
+      parse_error: "Parse error",
+      paused: "Paused during Churn",
+    };
+    const connection = source.connected
+      ? source.authenticated === true
+        ? "Last request connected · authenticated"
+        : "Last request connected"
+      : source.authenticated === false
+        ? "Last request: authentication rejected"
+        : "Last request disconnected";
+    return {
+      configured: true,
+      status: labels[source.state] || "Configured",
+      connection,
+      printer: typeof data.printer_state === "string" ? data.printer_state : "—",
+      bed,
+      freshness,
+      error: typeof source.last_error?.message === "string"
+        ? source.last_error.message
+        : null,
+    };
+  }
+
   return {
     payloadText,
     formatBytes,
@@ -257,6 +310,7 @@
     currentEvidenceControl,
     resolvePage,
     thermalSnapshot,
+    prusalinkSummary,
     MAX_ESTIMATED_RECORDS,
     QUICK_ANNOTATION_MARKERS,
   };

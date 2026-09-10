@@ -2,10 +2,12 @@ import time
 import threading
 from typing import Callable
 from unittest import TestCase
+from urllib.error import URLError
 
 from dragonsniff.client import DragonClient
 from dragonsniff.observer import Observer
 from dragonsniff.recording import SessionRecorder
+from dragonsniff.prusalink import PrusaLinkConfig, PrusaLinkSource
 from dragonsniff.target import parse_target
 
 from tests.test_client import DeviceFixture
@@ -21,6 +23,37 @@ def wait_until(predicate: Callable[[], bool], timeout: float = 2.0) -> None:
 
 
 class ObserverTests(TestCase):
+    def test_prusalink_failure_does_not_interrupt_dragon_observation(self) -> None:
+        with DeviceFixture() as fixture:
+            target = parse_target(fixture.target)
+            recorder = SessionRecorder(max_records=50)
+            client = DragonClient(target, recorder)
+            config = PrusaLinkConfig.from_values("prusa.local", "secret", 1)
+
+            def unavailable(*_args, **_kwargs):
+                raise URLError("printer unavailable")
+
+            source = PrusaLinkSource(config, recorder, opener=unavailable)
+            observer = Observer(target, client=client, prusalink_source=source)
+            observer.start()
+            wait_until(lambda: observer.snapshot()["sse"]["state"] == "closed")
+            wait_until(
+                lambda: observer.snapshot()["prusalink"]["state"]
+                == "transport_error"
+            )
+            snapshot = observer.snapshot()
+            observer.stop()
+
+        self.assertEqual(snapshot["session_state"], "observing")
+        self.assertEqual(snapshot["prusalink"]["state"], "transport_error")
+        self.assertTrue(any(
+            record["kind"] == "source_observation"
+            and record["source"] == "prusalink"
+            and record["owner"] == "observation"
+            for record in recorder.snapshot()
+        ))
+        self.assertFalse(source.is_alive)
+
     def test_session_fetches_all_endpoints_and_streams_then_cleans_up(self) -> None:
         with DeviceFixture() as fixture:
             target = parse_target(fixture.target)

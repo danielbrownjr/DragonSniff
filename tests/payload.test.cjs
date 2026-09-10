@@ -18,9 +18,58 @@ const {
   historyStorageSummary,
   currentEvidenceControl,
   payloadText,
+  prusalinkSummary,
   resolvePage,
   thermalSnapshot,
 } = require("../src/dragonsniff/web/payload.js");
+
+test("PrusaLink summary keeps disabled and unhealthy source state explicit", () => {
+  assert.deepEqual(prusalinkSummary({configured: false}), {
+    configured: false,
+    status: "Disabled",
+    connection: "Not configured",
+    printer: "—",
+    bed: "—",
+    freshness: "No sample",
+    error: null,
+  });
+  assert.deepEqual(prusalinkSummary({
+    configured: true,
+    state: "transport_error",
+    connected: false,
+    authenticated: null,
+    freshness: {state: "stale", sample_age_ms: 16250},
+    data: {printer_state: "PRINTING", bed_temperature_c: 61.25, bed_target_c: 65},
+    last_error: {message: "printer unavailable"},
+  }), {
+    configured: true,
+    status: "Transport error",
+    connection: "Last request disconnected",
+    printer: "PRINTING",
+    bed: "61.3 / 65.0 °C",
+    freshness: "Stale · 16.3 s old",
+    error: "printer unavailable",
+  });
+});
+
+test("PrusaLink summary reports authenticated fresh state without inventing fields", () => {
+  assert.deepEqual(prusalinkSummary({
+    configured: true,
+    state: "healthy",
+    connected: true,
+    authenticated: true,
+    freshness: {state: "fresh", sample_age_ms: 250},
+    data: {printer_state: "IDLE"},
+  }), {
+    configured: true,
+    status: "Healthy",
+    connection: "Last request connected · authenticated",
+    printer: "IDLE",
+    bed: "—",
+    freshness: "Fresh · 0.3 s old",
+    error: null,
+  });
+});
 
 test("current evidence control follows authoritative recorder records", () => {
   const unavailable = {

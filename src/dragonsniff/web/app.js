@@ -618,6 +618,20 @@ function renderCapture(snapshot) {
   updateCaptureBudget();
 }
 
+function renderPrusaLink(source) {
+  const summary = payloadTools.prusalinkSummary(source);
+  text("#prusalinkStatus", summary.status);
+  document.querySelector("#prusalinkStatus").dataset.status = source?.state || "disabled";
+  text("#prusalinkConnection", summary.connection);
+  text("#prusalinkPrinterState", summary.printer);
+  text("#prusalinkBed", summary.bed);
+  text("#prusalinkFreshness", summary.freshness);
+  const error = document.querySelector("#prusalinkError");
+  error.hidden = summary.error === null;
+  error.textContent = summary.error || "";
+  error.dataset.status = summary.error === null ? "available" : "error";
+}
+
 function renderThermals(latestState) {
   const thermal = payloadTools.thermalSnapshot(latestState);
   const temperature = (value) => value === null || value === undefined
@@ -693,6 +707,7 @@ function render(snapshot) {
   else exportLink.removeAttribute("href");
   renderChurn(snapshot);
   renderCapture(snapshot);
+  renderPrusaLink(snapshot.prusalink);
   if (snapshot.automation_return?.error) {
     showNotice(
       notice,

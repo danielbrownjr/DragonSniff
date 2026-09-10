@@ -21,6 +21,7 @@ from .annotations import (
     AnnotationRequest,
 )
 from .client import DragonClient
+from .prusalink import PrusaLinkConfig, PrusaLinkSource
 from .recording import SessionRecorder
 from .target import DeviceTarget
 
@@ -166,11 +167,24 @@ class CaptureRunner:
         *,
         recorder: SessionRecorder | None = None,
         client: DragonClient | None = None,
+        prusalink_config: PrusaLinkConfig | None = None,
+        prusalink_source: PrusaLinkSource | None = None,
     ) -> None:
         config.validate()
         self.target = target
         self.config = config
-        required_records = config.estimated_records()
+        source_config = (
+            prusalink_config
+            or (prusalink_source.config if prusalink_source is not None else None)
+            or PrusaLinkConfig()
+        )
+        source_records = source_config.estimated_capture_records(
+            config.duration_seconds,
+            boundary_request_seconds=(
+                4.0 * float(getattr(client, "request_timeout", 5.0))
+            ),
+        )
+        required_records = config.estimated_records() + source_records
         self.recorder = (
             client.recorder
             if client is not None
@@ -190,6 +204,11 @@ class CaptureRunner:
             self.recorder.max_records - required_records,
         )
         self.client = client or DragonClient(target, self.recorder, connection_limit=1)
+        self.prusalink = prusalink_source or PrusaLinkSource(
+            source_config, self.recorder
+        )
+        if self.prusalink.recorder is not self.recorder:
+            raise ValueError("PrusaLink source must share the capture recorder")
         self.run_id = uuid4().hex
         self._lock = Lock()
         self._cancel = Event()
@@ -208,6 +227,8 @@ class CaptureRunner:
             "profiles": config.profile_snapshots(),
             "bounds": config.bounds(),
             "estimated_records": config.estimated_records(),
+            "source_estimated_records": source_records,
+            "total_estimated_records": required_records,
             "samples_completed": 0,
             "fetches_completed": 0,
             "state_successes": 0,
@@ -246,6 +267,8 @@ class CaptureRunner:
                 profile=self.config.profile_name(),
                 bounds=self.config.bounds(),
                 estimated_records=self.config.estimated_records(),
+                source_estimated_records=self._state["source_estimated_records"],
+                total_estimated_records=self._state["total_estimated_records"],
             )
             self._state["start_timestamp"] = started["timestamp"]
             thread = Thread(
@@ -254,6 +277,15 @@ class CaptureRunner:
                 daemon=True,
             )
             self._thread = thread
+            self.prusalink.start(
+                context={
+                    "run_id": self.run_id,
+                    "capture_session_id": getattr(
+                        self.recorder, "session_id", None
+                    ),
+                    "owner": "capture",
+                }
+            )
         thread.start()
         return self.snapshot()
 
@@ -266,6 +298,7 @@ class CaptureRunner:
             self._state["state"] = "stopping"
             thread = self._thread
         self._cancel.set()
+        self.prusalink.request_stop()
         if thread is not None and thread is not current_thread():
             thread.join(timeout=max(0.0, timeout))
         return self._finish_if_complete()
@@ -392,6 +425,7 @@ class CaptureRunner:
             except Exception:
                 self._persist_failure(details)
         finally:
+            self.prusalink.stop()
             self._complete(outcome)
 
     def _sample(self, path: str, sample_point: str) -> None:
@@ -500,6 +534,8 @@ class CaptureRunner:
                 return False
             if self.client.budget.active != 0:
                 return False
+            if self.prusalink.is_alive:
+                return False
             if self._state["state"] == "stopping":
                 return False
             self._state["cleanup_complete"] = True
@@ -520,6 +556,7 @@ class CaptureRunner:
                 "device_connection_limit": self.client.budget.limit,
                 "recorder": self.recorder.summary(),
                 "recent_records": self.recorder.snapshot()[-recent_records:],
+                "prusalink": self.prusalink.snapshot(),
             }
         )
         return state

@@ -8,6 +8,7 @@ import time
 from typing import Any
 
 from .client import DragonClient, JSON_ENDPOINTS
+from .prusalink import PrusaLinkConfig, PrusaLinkSource
 from .recording import SessionRecorder
 from .target import DeviceTarget
 
@@ -23,6 +24,8 @@ class Observer:
         connection_limit: int = 2,
         recorder: SessionRecorder | None = None,
         client: DragonClient | None = None,
+        prusalink_config: PrusaLinkConfig | None = None,
+        prusalink_source: PrusaLinkSource | None = None,
     ) -> None:
         self.target = target
         self.recorder = (
@@ -33,6 +36,16 @@ class Observer:
         self.client = client or DragonClient(
             target, self.recorder, connection_limit=connection_limit
         )
+        source_config = (
+            prusalink_config
+            or (prusalink_source.config if prusalink_source is not None else None)
+            or PrusaLinkConfig()
+        )
+        self.prusalink = prusalink_source or PrusaLinkSource(
+            source_config, self.recorder
+        )
+        if self.prusalink.recorder is not self.recorder:
+            raise ValueError("PrusaLink source must share the observation recorder")
         self._lock = Lock()
         self._session_stop = Event()
         self._stream_stop: Event | None = None
@@ -59,6 +72,7 @@ class Observer:
             target=self.target.base_url,
             limits=self.limits(),
         )
+        self.prusalink.start(context={"owner": "observation"})
         self.refresh(connect_events=True)
 
     def refresh(self, *, connect_events: bool = False) -> bool:
@@ -176,9 +190,11 @@ class Observer:
                 return True
             self._state["session_state"] = "stopping"
         self._session_stop.set()
+        self.prusalink.request_stop()
         self.stop_events(timeout=max(0.0, deadline - time.monotonic()))
         if self._refresh_thread is not None and self._refresh_thread.is_alive():
             self._refresh_thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        self.prusalink.stop(timeout=max(0.0, deadline - time.monotonic()))
         return self._finish_stop_if_complete()
 
     def _finish_stop_if_complete(self) -> bool:
@@ -189,6 +205,8 @@ class Observer:
                 return False
             workers = (self._stream_thread, self._refresh_thread)
             if any(thread is not None and thread.is_alive() for thread in workers):
+                return False
+            if self.prusalink.is_alive:
                 return False
             if self.client.budget.active != 0:
                 return False
@@ -214,6 +232,7 @@ class Observer:
                 "limits": self.limits(),
                 "recent_records": records[-recent_records:],
                 "server_monotonic_ns": time.monotonic_ns(),
+                "prusalink": self.prusalink.snapshot(),
             }
         )
         return state

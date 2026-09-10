@@ -1,5 +1,6 @@
 import os
 import signal
+from tempfile import NamedTemporaryFile
 from threading import Event
 from unittest import TestCase
 from unittest.mock import patch
@@ -8,6 +9,7 @@ from dragonsniff.__main__ import (
     DEFAULT_BIND,
     DEFAULT_PORT,
     _listening_message,
+    _prusalink_api_key,
     _serve,
     main,
     parser,
@@ -23,6 +25,8 @@ class CommandLineTests(TestCase):
         self.assertEqual(args.port, DEFAULT_PORT)
         self.assertEqual(args.log_level, "INFO")
         self.assertEqual(args.allow_host, [])
+        self.assertIsNone(args.prusalink_url)
+        self.assertEqual(args.prusalink_poll_interval, 5.0)
 
     def test_server_settings_can_come_from_environment(self) -> None:
         with patch.dict(
@@ -39,6 +43,9 @@ class CommandLineTests(TestCase):
                     "192.0.2.10:8766, dragonsniff.home.arpa:443"
                 ),
                 "DRAGONSNIFF_REQUIRE_ALLOWLIST": "true",
+                "DRAGONSNIFF_PRUSALINK_URL": "http://prusa.local",
+                "DRAGONSNIFF_PRUSALINK_API_KEY": "secret-not-an-arg",
+                "DRAGONSNIFF_PRUSALINK_POLL_INTERVAL": "12.5",
             },
             clear=True,
         ):
@@ -56,6 +63,9 @@ class CommandLineTests(TestCase):
             ["192.0.2.10:8766", "dragonsniff.home.arpa:443"],
         )
         self.assertTrue(args.require_allowlist)
+        self.assertEqual(args.prusalink_url, "http://prusa.local")
+        self.assertEqual(args.prusalink_poll_interval, 12.5)
+        self.assertFalse(hasattr(args, "prusalink_api_key"))
 
     def test_command_line_overrides_environment(self) -> None:
         with patch.dict(
@@ -152,6 +162,49 @@ class CommandLineTests(TestCase):
             self.assertRaisesRegex(SystemExit, "at least one --allow-target"),
         ):
             main()
+
+    def test_invalid_prusalink_startup_configuration_stops_before_server(self) -> None:
+        with (
+            patch.dict(
+                os.environ,
+                {"DRAGONSNIFF_PRUSALINK_URL": "http://prusa.local"},
+                clear=True,
+            ),
+            patch("sys.argv", ["dragonsniff"]),
+            patch("dragonsniff.__main__.DragonSniffServer") as server,
+            self.assertRaisesRegex(SystemExit, "API key"),
+        ):
+            main()
+
+        server.assert_not_called()
+
+    def test_prusalink_secret_file_is_supported_without_a_cli_secret(self) -> None:
+        with NamedTemporaryFile() as secret:
+            secret.write(b"file-secret\n")
+            secret.flush()
+            with patch.dict(
+                os.environ,
+                {
+                    "DRAGONSNIFF_PRUSALINK_URL": "http://prusa.local",
+                    "DRAGONSNIFF_PRUSALINK_API_KEY_FILE": secret.name,
+                },
+                clear=True,
+            ):
+                self.assertEqual(_prusalink_api_key(), "file-secret")
+
+    def test_prusalink_secret_sources_are_mutually_exclusive(self) -> None:
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "DRAGONSNIFF_PRUSALINK_API_KEY": "direct",
+                    "DRAGONSNIFF_PRUSALINK_API_KEY_FILE": "/run/secrets/key",
+                },
+                clear=True,
+            ),
+            self.assertRaisesRegex(SystemExit, "only one"),
+        ):
+            _prusalink_api_key()
 
 
 class ServiceLifecycleTests(TestCase):

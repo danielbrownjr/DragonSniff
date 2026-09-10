@@ -27,6 +27,7 @@ from .annotations import (
 from .capture import CaptureConfig, CaptureRunner
 from .churn import ChurnConfig, ChurnRunner
 from .observer import Observer
+from .prusalink import PrusaLinkConfig
 from .recording import SessionRecorder
 from .storage import SessionStore, export_filename, is_valid_session_id
 from .target import DeviceTarget, TargetValidationError, parse_target
@@ -140,6 +141,7 @@ class SessionManager:
         *,
         store: SessionStore | None = None,
         allowed_targets: Iterable[str] = (),
+        prusalink_config: PrusaLinkConfig | None = None,
     ) -> None:
         self._observer: Observer | None = None
         self._churn: ChurnRunner | None = None
@@ -154,6 +156,7 @@ class SessionManager:
         self._last_automation_return: str | None = None
         self._resume_error: str | None = None
         self._store = store
+        self._prusalink_config = prusalink_config or PrusaLinkConfig()
         self._allowed_targets = frozenset(
             parse_target(value).base_url for value in allowed_targets
         )
@@ -500,6 +503,9 @@ class SessionManager:
             )
             return result
         result = self.empty_snapshot()
+        result["prusalink"] = self._prusalink_config.public_snapshot(
+            state="paused" if active_automation == "churn" else None
+        )
         result["automation_return"] = automation_return
         result["churn"] = (
             churn.snapshot() if churn is not None else self.empty_churn_snapshot()
@@ -529,6 +535,9 @@ class SessionManager:
             result["limits"]["device_connection_limit"] = result["capture"][
                 "device_connection_limit"
             ]
+            result["prusalink"] = result["capture"].get(
+                "prusalink", self._prusalink_config.public_snapshot()
+            )
         return result
 
     def export_jsonl(self) -> str | None:
@@ -571,12 +580,18 @@ class SessionManager:
 
     def _new_observer(self, target: DeviceTarget) -> Observer:
         if self._store is None:
+            if self._prusalink_config.enabled:
+                return Observer(target, prusalink_config=self._prusalink_config)
             return Observer(target)
+        recorder = self._store.create_recorder(
+            "observation", target.base_url, 2_000
+        )
+        if not self._prusalink_config.enabled:
+            return Observer(target, recorder=recorder)
         return Observer(
             target,
-            recorder=self._store.create_recorder(
-                "observation", target.base_url, 2_000
-            ),
+            recorder=recorder,
+            prusalink_config=self._prusalink_config,
         )
 
     def _new_churn(self, target: DeviceTarget, config: ChurnConfig) -> ChurnRunner:
@@ -592,15 +607,28 @@ class SessionManager:
         self, target: DeviceTarget, config: CaptureConfig
     ) -> CaptureRunner:
         if self._store is None:
+            if self._prusalink_config.enabled:
+                return CaptureRunner(
+                    target, config, prusalink_config=self._prusalink_config
+                )
             return CaptureRunner(target, config)
+        source_records = self._prusalink_config.estimated_capture_records(
+            config.duration_seconds
+        )
+        recorder = self._store.create_recorder(
+            "capture",
+            target.base_url,
+            config.estimated_records()
+            + source_records
+            + MAX_CAPTURE_ANNOTATIONS,
+        )
+        if not self._prusalink_config.enabled:
+            return CaptureRunner(target, config, recorder=recorder)
         return CaptureRunner(
             target,
             config,
-            recorder=self._store.create_recorder(
-                "capture",
-                target.base_url,
-                config.estimated_records() + MAX_CAPTURE_ANNOTATIONS,
-            ),
+            recorder=recorder,
+            prusalink_config=self._prusalink_config,
         )
 
     @staticmethod
@@ -663,6 +691,8 @@ class SessionManager:
             "profiles": config.profile_snapshots(),
             "bounds": config.bounds(),
             "estimated_records": config.estimated_records(),
+            "source_estimated_records": 0,
+            "total_estimated_records": config.estimated_records(),
             "samples_completed": 0,
             "fetches_completed": 0,
             "state_successes": 0,
@@ -692,6 +722,7 @@ class SessionManager:
                 "dropped_records": 0,
             },
             "recent_records": [],
+            "prusalink": PrusaLinkConfig().public_snapshot(),
         }
 
     @staticmethod
@@ -739,6 +770,7 @@ class SessionManager:
             "elapsed_ms": 0.0,
             "recorder": {"records": 0, "max_records": 2_000, "dropped_records": 0},
             "recent_records": [],
+            "prusalink": PrusaLinkConfig().public_snapshot(),
         }
 
     @staticmethod
