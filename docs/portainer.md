@@ -68,7 +68,7 @@ These lines extend the matching `environment` and `volumes` sections in the stac
 
 The public image requires no Portainer registry credentials:
 
-- `ghcr.io/danielbrownjr/dragonsniff:latest` follows the newest release whose immutable image passed runtime validation.
+- `ghcr.io/danielbrownjr/dragonsniff:latest` follows the newest stable release whose immutable image passed runtime validation. Release candidates do not move it.
 - `ghcr.io/danielbrownjr/dragonsniff:sha-<full-commit-sha>` pins one immutable build.
 
 To upgrade, pull the newest image and redeploy the stack. The named volume preserves evidence. For a reproducible deployment or rollback, replace `latest` with the desired full SHA tag and redeploy; keep the same volume declaration.

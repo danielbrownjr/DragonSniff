@@ -1,0 +1,327 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Python release version, for example 0.5.0rc1 or 0.5.0
+        required: true
+        type: string
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: ghcr.io/danielbrownjr/dragonsniff
+
+jobs:
+  preflight:
+    name: Validate release candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      manifest_digest: ${{ steps.image.outputs.manifest_digest }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+      release_sha: ${{ steps.version.outputs.release_sha }}
+      release_tag: ${{ steps.version.outputs.release_tag }}
+      wheel_name: ${{ steps.wheel.outputs.wheel_name }}
+      wheel_sha256: ${{ steps.wheel.outputs.wheel_sha256 }}
+
+    steps:
+      - name: Require current main commit
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if test "$GITHUB_REF" != refs/heads/main; then
+            echo "Release must be dispatched from main, not $GITHUB_REF" >&2
+            exit 1
+          fi
+          if test -z "$REQUESTED_VERSION"; then
+            echo "A release version is required" >&2
+            exit 1
+          fi
+
+      - name: Check out exact release commit
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Derive and verify release identity
+        id: version
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_version="$(PYTHONPATH=src python -c 'from dragonsniff._version import __version__; print(__version__)')"
+          if test "$REQUESTED_VERSION" != "$package_version"; then
+            echo "Requested version $REQUESTED_VERSION does not match package version $package_version" >&2
+            exit 1
+          fi
+          release_json="$(python scripts/validate_release_promotion.py derive "$REQUESTED_VERSION")"
+          echo "release_tag=$(jq -r .release_tag <<< "$release_json")" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$(jq -r .prerelease <<< "$release_json")" >> "$GITHUB_OUTPUT"
+          echo "release_sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Install DragonSniff
+        run: python -m pip install .
+
+      - name: Run Python tests with warnings as errors
+        env:
+          PYTHONWARNINGS: error
+        run: python -m unittest discover -s tests -v
+
+      - name: Run JavaScript checks and browser tests
+        run: |
+          node --check src/dragonsniff/web/payload.js
+          node --check src/dragonsniff/web/app.js
+          node --test tests/payload.test.cjs
+
+      - name: Run source and dependency checks
+        run: |
+          python -m compileall -q src scripts tests
+          python -m pip check
+          git diff --check
+
+      - name: Build and verify wheel
+        id: wheel
+        env:
+          PACKAGE_VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip wheel --no-deps --wheel-dir dist .
+          shopt -s nullglob
+          wheels=(dist/*.whl)
+          test "${#wheels[@]}" -eq 1
+          wheel="${wheels[0]}"
+          python scripts/verify_release_wheel.py "$wheel" "$PACKAGE_VERSION"
+          wheel_name="$(basename "$wheel")"
+          wheel_sha256="$(sha256sum "$wheel" | cut -d ' ' -f 1)"
+          echo "wheel_name=$wheel_name" >> "$GITHUB_OUTPUT"
+          echo "wheel_sha256=$wheel_sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke-test clean wheel installation
+        env:
+          PACKAGE_VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m venv /tmp/dragonsniff-release-wheel
+          /tmp/dragonsniff-release-wheel/bin/python -m pip install --no-deps dist/*.whl
+          installed_version="$(/tmp/dragonsniff-release-wheel/bin/python -c 'from dragonsniff import __version__; print(__version__)')"
+          test "$installed_version" = "$PACKAGE_VERSION"
+          /tmp/dragonsniff-release-wheel/bin/dragonsniff --help >/dev/null
+
+      - name: Upload validated wheel for release job
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-wheel
+          path: dist/*.whl
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR for immutable-image verification
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify and smoke-test immutable image
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_ref="$IMAGE_NAME:sha-$GITHUB_SHA"
+          if ! manifest_digest="$(docker buildx imagetools inspect "$source_ref" --format '{{json .Manifest.Digest}}' | tr -d '"')"; then
+            echo "Immutable image $source_ref is unavailable; wait for Publish container on this main commit, then retry." >&2
+            exit 1
+          fi
+          docker pull "$source_ref@$manifest_digest"
+          cleanup() {
+            docker rm --force dragonsniff-release-smoke >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          docker run --detach --name dragonsniff-release-smoke \
+            --read-only --tmpfs /tmp --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --publish 127.0.0.1:8765:8765 \
+            --env DRAGONSNIFF_ALLOWED_TARGETS=http://127.0.0.1:9 \
+            "$source_ref@$manifest_digest" >/dev/null
+          for attempt in {1..20}; do
+            if curl --fail --silent http://127.0.0.1:8765/healthz >/dev/null; then
+              echo "manifest_digest=$manifest_digest" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 0.5
+          done
+          docker logs dragonsniff-release-smoke
+          exit 1
+
+  tag:
+    name: Create immutable release tag
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out exact release commit
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.preflight.outputs.release_sha }}
+          fetch-depth: 0
+
+      - name: Create or verify annotated release tag
+        env:
+          RELEASE_SHA: ${{ needs.preflight.outputs.release_sha }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.release_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          existing_tag_sha=""
+          if git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            git fetch --no-tags origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+            existing_tag_sha="$(git rev-parse "$RELEASE_TAG^{commit}")"
+          fi
+          python scripts/validate_release_promotion.py validate-tag-target \
+            "$RELEASE_SHA" "$existing_tag_sha"
+          if test -z "$existing_tag_sha"; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag --annotate "$RELEASE_TAG" "$RELEASE_SHA" \
+              --message "DragonSniff $RELEASE_TAG"
+            git push origin "refs/tags/$RELEASE_TAG"
+          fi
+
+  promote-version:
+    name: Promote immutable image to version
+    needs: [preflight, tag]
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/promote-container.yml
+    with:
+      promotion_target: version
+      release_version: ${{ needs.preflight.outputs.release_tag }}
+      release_sha: ${{ needs.preflight.outputs.release_sha }}
+    secrets: inherit
+
+  github-release:
+    name: Publish GitHub Release and wheel
+    needs: [preflight, promote-version]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out exact release commit
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.preflight.outputs.release_sha }}
+
+      - name: Download validated wheel
+        uses: actions/download-artifact@v4
+        with:
+          name: release-wheel
+          path: dist
+
+      - name: Verify wheel survived artifact transfer
+        env:
+          EXPECTED_SHA256: ${{ needs.preflight.outputs.wheel_sha256 }}
+          WHEEL_NAME: ${{ needs.preflight.outputs.wheel_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(sha256sum "dist/$WHEEL_NAME" | cut -d ' ' -f 1)" = "$EXPECTED_SHA256"
+
+      - name: Create or verify GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MANIFEST_DIGEST: ${{ needs.promote-version.outputs.manifest_digest }}
+          PRERELEASE: ${{ needs.preflight.outputs.prerelease }}
+          RELEASE_SHA: ${{ needs.preflight.outputs.release_sha }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.release_tag }}
+          WHEEL_NAME: ${{ needs.preflight.outputs.wheel_name }}
+          WHEEL_SHA256: ${{ needs.preflight.outputs.wheel_sha256 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf -v container_note \
+            'Immutable container: `%s:%s` (`%s`)\n\nWheel SHA256: `%s`' \
+            "$IMAGE_NAME" "$RELEASE_TAG" "$MANIFEST_DIGEST" "$WHEEL_SHA256"
+          if release_json="$(gh release view "$RELEASE_TAG" --json isDraft,isPrerelease,tagName 2>/dev/null)"; then
+            test "$(jq -r .tagName <<< "$release_json")" = "$RELEASE_TAG"
+            test "$(jq -r .isDraft <<< "$release_json")" = false
+            test "$(jq -r .isPrerelease <<< "$release_json")" = "$PRERELEASE"
+            if gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | grep -Fxq "$WHEEL_NAME"; then
+              comparison_dir="$(mktemp -d)"
+              gh release download "$RELEASE_TAG" --pattern "$WHEEL_NAME" --dir "$comparison_dir"
+              test "$(sha256sum "$comparison_dir/$WHEEL_NAME" | cut -d ' ' -f 1)" = "$WHEEL_SHA256"
+            else
+              gh release upload "$RELEASE_TAG" "dist/$WHEEL_NAME"
+            fi
+          else
+            prerelease_args=()
+            if test "$PRERELEASE" = true; then
+              prerelease_args+=(--prerelease)
+            fi
+            curated_notes="docs/releases/$RELEASE_TAG.md"
+            if test -f "$curated_notes"; then
+              notes_file="$(mktemp)"
+              printf '%b\n\n' "$container_note" > "$notes_file"
+              cat "$curated_notes" >> "$notes_file"
+              gh release create "$RELEASE_TAG" "dist/$WHEEL_NAME" \
+                --verify-tag --title "DragonSniff $RELEASE_TAG" \
+                --notes-file "$notes_file" "${prerelease_args[@]}"
+            else
+              gh release create "$RELEASE_TAG" "dist/$WHEEL_NAME" \
+                --verify-tag --title "DragonSniff $RELEASE_TAG" \
+                --generate-notes --notes "$container_note" \
+                "${prerelease_args[@]}"
+            fi
+          fi
+          {
+            echo "### DragonSniff $RELEASE_TAG"
+            echo "- Commit: \`$RELEASE_SHA\`"
+            echo "- Container: \`$IMAGE_NAME:$RELEASE_TAG@$MANIFEST_DIGEST\`"
+            echo "- Wheel: \`$WHEEL_NAME\`"
+            echo "- Wheel SHA256: \`$WHEEL_SHA256\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  promote-latest:
+    name: Promote stable release to latest
+    if: needs.preflight.outputs.prerelease == 'false'
+    needs: [preflight, github-release]
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/promote-container.yml
+    with:
+      promotion_target: latest
+      release_version: ${{ needs.preflight.outputs.release_tag }}
+      release_sha: ${{ needs.preflight.outputs.release_sha }}
+    secrets: inherit

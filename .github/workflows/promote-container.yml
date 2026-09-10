@@ -1,0 +1,121 @@
+name: Promote container manifest
+
+on:
+  workflow_call:
+    inputs:
+      promotion_target:
+        required: true
+        type: string
+      release_version:
+        required: true
+        type: string
+      release_sha:
+        required: true
+        type: string
+    outputs:
+      manifest_digest:
+        description: Digest shared by the immutable and promoted image tags
+        value: ${{ jobs.promote.outputs.manifest_digest }}
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_NAME: ghcr.io/danielbrownjr/dragonsniff
+
+concurrency:
+  group: promote-container-${{ inputs.release_version }}
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    name: Promote verified image
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      manifest_digest: ${{ steps.promote.outputs.manifest_digest }}
+
+    steps:
+      - name: Check out exact release commit
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.release_sha }}
+          fetch-depth: 0
+
+      - name: Validate promotion request
+        env:
+          PROMOTION_TARGET: ${{ inputs.promotion_target }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          RELEASE_SHA: ${{ inputs.release_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_version="$(PYTHONPATH=src python -c 'from dragonsniff._version import __version__; print(__version__)')"
+          python scripts/validate_release_promotion.py validate-promotion \
+            "$RELEASE_VERSION" "$package_version" "$PROMOTION_TARGET"
+          git fetch --no-tags origin "refs/tags/$RELEASE_VERSION:refs/tags/$RELEASE_VERSION"
+          tag_commit="$(git rev-parse "$RELEASE_VERSION^{commit}")"
+          python scripts/validate_release_promotion.py validate-tag-target \
+            "$RELEASE_SHA" "$tag_commit"
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Promote and verify manifest
+        id: promote
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PROMOTION_TARGET: ${{ inputs.promotion_target }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          RELEASE_SHA: ${{ inputs.release_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_ref="$IMAGE_NAME:sha-$RELEASE_SHA"
+          source_digest="$(docker buildx imagetools inspect "$source_ref" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+
+          if test "$PROMOTION_TARGET" = version; then
+            target_ref="$IMAGE_NAME:$RELEASE_VERSION"
+            registry_token="$(curl --fail --silent --show-error \
+              --user "$GITHUB_ACTOR:$GHCR_TOKEN" \
+              'https://ghcr.io/token?service=ghcr.io&scope=repository:danielbrownjr/dragonsniff:pull,push' \
+              | jq -r .token)"
+            headers="$(mktemp)"
+            status="$(curl --silent --show-error --output /dev/null \
+              --dump-header "$headers" --write-out '%{http_code}' \
+              --request HEAD \
+              --header "Authorization: Bearer $registry_token" \
+              --header 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
+              "https://ghcr.io/v2/danielbrownjr/dragonsniff/manifests/$RELEASE_VERSION")"
+            if test "$status" = 200; then
+              target_digest="$(awk 'tolower($1) == "docker-content-digest:" {print $2}' "$headers" | tr -d '\r')"
+              test -n "$target_digest"
+              if test "$target_digest" != "$source_digest"; then
+                echo "Refusing to overwrite $target_ref at $target_digest" >&2
+                exit 1
+              fi
+            elif test "$status" = 404; then
+              docker buildx imagetools create --tag "$target_ref" "$source_ref@$source_digest"
+            else
+              echo "Unable to determine whether $target_ref exists (HTTP $status); refusing to write" >&2
+              exit 1
+            fi
+          else
+            version_digest="$(docker buildx imagetools inspect "$IMAGE_NAME:$RELEASE_VERSION" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+            test "$version_digest" = "$source_digest"
+            target_ref="$IMAGE_NAME:latest"
+            docker buildx imagetools create --tag "$target_ref" "$source_ref@$source_digest"
+          fi
+
+          target_digest="$(docker buildx imagetools inspect "$target_ref" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          test "$target_digest" = "$source_digest"
+          echo "manifest_digest=$source_digest" >> "$GITHUB_OUTPUT"
