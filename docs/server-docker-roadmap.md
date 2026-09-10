@@ -12,10 +12,11 @@ DragonSniff is a persistent, headless-capable service today. This document recor
 - SIGINT and SIGTERM share one bounded session-cleanup path before server close.
 - Static assets load from the installed package; no browser or interactive terminal is required after startup.
 - Local request workers and device connections have fixed limits.
+- An optional PrusaLink source adds only authenticated, read-only `GET /api/v1/status` observations. It is disabled by default and shares the recorder's global arrival-order sequence.
 
 ## Persistence and recovery
 
-With `--data-dir`, each observation, Thermal capture, and Churn run owns a session directory containing `metadata.json` and append-only `evidence.jsonl`. Without it, bounded in-memory operation remains available for short interactive use.
+With `--data-dir`, each observation, Thermal capture, and Churn run owns a session directory containing `metadata.json` and append-only `evidence.jsonl`. Configured PrusaLink `source_observation` records are appended to the applicable observation or Thermal file rather than a separate log. Without persistent storage, bounded in-memory operation remains available for short interactive use.
 
 Each complete JSONL record is flushed before the live recorder reports success. Metadata is cached, checkpointed every 64 records, and synchronously updated on terminal transitions. Startup streams unfinished evidence to reconcile counters, quarantines only an incomplete final record as `evidence.partial`, and marks a previously active run `interrupted`. It never resumes device work or invents a response.
 
@@ -25,7 +26,7 @@ Session/evidence creation and atomic metadata replacement flush their containing
 
 ## Security and network boundary
 
-DragonSniff makes only fixed read-only requests to authorized Dragon targets. It is not a generic proxy and exposes no device mutation route.
+DragonSniff makes only fixed read-only requests to authorized Dragon targets and, when configured, authenticated `GET /api/v1/status` requests to one PrusaLink origin. It is not a generic proxy and exposes no device or printer mutation route. PrusaLink credentials authenticate only that outbound printer request; DragonSniff remains an unauthenticated local service.
 
 - Localhost and `127.0.0.1` on the listening port are trusted browser authorities by default.
 - `DRAGONSNIFF_ALLOWED_HOSTS` or repeated `--allow-host` values add exact trusted authorities.
@@ -66,5 +67,6 @@ DragonSniff talks to Dragons over HTTP(S), not host USB or serial devices. Conta
 - [Issue #26](https://github.com/danielbrownjr/DragonSniff/issues/26): define a supported HTTPS deployment and resolve or explain the Brave warning for LAN evidence downloads.
 - Add other runtime platforms only after their build and deployment behavior is validated.
 - Authentication and remote multi-user operation remain explicitly deferred; trusted-host configuration does not provide either.
+- Additional external observation sources such as thermocouple loggers, PSU/current monitors, and bench instruments remain deferred. The implemented PrusaLink provenance envelope is not a generic plugin or instrumentation framework.
 
 No current roadmap item authorizes device mutation, a generic proxy, weaker target allowlisting, or public-internet exposure.

@@ -1,6 +1,6 @@
 # DragonSniff
 
-**Local, read-only observability tooling for Dragon-family devices.**
+**Local, read-only observability tooling for Dragon-family devices, with optional correlated PrusaLink telemetry.**
 
 DragonSniff gives firmware developers one place to inspect Dragon HTTP APIs, follow event streams, run bounded communications exercises, and export timestamped evidence. It observes and records; it never becomes part of a device's control or safety loop.
 
@@ -36,6 +36,7 @@ There is no generic proxy and no device mutation route.
 - Python 3.11 or newer
 - A modern browser
 - Network access to a Dragon-family device you are authorized to inspect
+- Optional network access to a separately configured PrusaLink printer
 
 The application has no runtime dependencies outside the Python standard library. Windows is used for current physical validation and CI runs on Linux. Other Python 3.11+ environments are expected to work but are not yet physically qualified.
 
@@ -78,7 +79,7 @@ Storage defaults to 500 sessions and 256 MiB, with oldest finished sessions remo
 
 `DRAGONSNIFF_DATA_DIR`, `DRAGONSNIFF_ALLOWED_TARGETS`, `DRAGONSNIFF_ALLOWED_HOSTS`, `DRAGONSNIFF_REQUIRE_ALLOWLIST`, `DRAGONSNIFF_RETENTION_SESSIONS`, and `DRAGONSNIFF_RETENTION_BYTES` provide environment equivalents. Comma-separate multiple environment allowlist entries. `--allow-host` may be repeated to add exact browser authorities; loopback on the listening port remains accepted by default.
 
-Optional PrusaLink polling is disabled unless `DRAGONSNIFF_PRUSALINK_URL` (or `--prusalink-url`) and an API key are configured. Prefer `DRAGONSNIFF_PRUSALINK_API_KEY_FILE`; direct `DRAGONSNIFF_PRUSALINK_API_KEY` is intended for trusted development environments. The key is startup-only secret material and is never exposed through the browser, local API, evidence, or logs.
+Optional PrusaLink polling is disabled unless `DRAGONSNIFF_PRUSALINK_URL` (or `--prusalink-url`) and an API key are configured. Prefer `DRAGONSNIFF_PRUSALINK_API_KEY_FILE`; direct `DRAGONSNIFF_PRUSALINK_API_KEY` is intended for trusted development environments. `DRAGONSNIFF_PRUSALINK_POLL_INTERVAL` optionally selects the 1–60 second polling cadence. The key is startup-only secret material and is never exposed through the browser, local API, evidence, or logs. See [Optional PrusaLink observations](docs/prusalink-observation.md) for the complete configuration and evidence contract.
 
 `GET /healthz` reports whether the local web service is responsive and does not require device connectivity.
 
@@ -116,18 +117,18 @@ See the [direct trusted-LAN Portainer recipe](docs/portainer.md) for the NAS-val
 
 ## Concepts
 
-- **Observer:** fetches the three JSON endpoints and holds one SSE stream. Stop/reconnect controls affect the stream without silently replacing the session.
+- **Observer:** fetches the three Dragon JSON endpoints and holds one Dragon SSE stream. Stop/reconnect controls affect the stream without silently replacing the session.
 - **Capture:** polls fixed state and health endpoints on a bounded schedule. It pauses live observation and restores it after cleanup.
 - **Operator annotation:** adds a local operator-time marker to a running Thermal capture without sending traffic to the observed device.
 - **PrusaLink observation:** optionally records read-only printer state and temperature context on the active observation or Thermal timeline. It pauses during Churn and never controls the printer.
 - **Churn:** performs bounded, sequential SSE lifecycle exercises. Capacity rejection and cleanup timing are retained as evidence.
-- **Session recorder:** stores ordered raw and parsed observations in bounded memory and, when configured, appends them to durable JSONL evidence.
+- **Session recorder:** stores Dragon records and optional `source_observation` records under one global arrival-order sequence in bounded memory and, when configured, appends them to durable JSONL evidence.
 
 Only one operating mode is active at a time. The UI identifies the active mode, whether it is running/stopping/complete, and which evidence export is available. Completed Thermal and Churn evidence remains separately downloadable after observation resumes; the global export follows the session currently shown.
 
 ## Exporting evidence
 
-The dashboard offers **Download current session JSONL** only while the current session owns recorded evidence; otherwise it says **No current evidence**. Thermal and Churn provide run-specific downloads once their evidence exists. **History** is the durable, authoritative source for prior persisted sessions. JSONL records retain timestamps, request identities, successfully UTF-8-decoded response text, marked replacement-decoded views for invalid transport bytes, parsed JSON when safely representable, machine-readable parse/validation errors otherwise, SSE lifecycle events, operator annotations, and cleanup outcomes. Malformed parsed DUT text is withheld rather than repaired.
+The dashboard offers **Download current session JSONL** only while the current session owns recorded evidence; otherwise it says **No current evidence**. Thermal and Churn provide run-specific downloads once their evidence exists. **History** is the durable, authoritative source for prior persisted sessions. Dragon endpoint and event records retain timestamps, request identities, successfully UTF-8-decoded response text, marked replacement-decoded views for invalid transport bytes, parsed JSON when safely representable, and machine-readable parse/validation errors otherwise. The same JSONL timeline also retains SSE lifecycle events, normalized optional PrusaLink `source_observation` records, operator annotations, and cleanup outcomes. One recorder sequence is the authoritative arrival order across sources. Malformed parsed DUT text is withheld rather than repaired.
 
 Downloads use stable names that identify their ownership: `dragonsniff-session.jsonl` for the active session, `dragonsniff-thermal-capture.jsonl` for a retained Thermal run, and `dragonsniff-sse-churn.jsonl` for a retained Churn run.
 

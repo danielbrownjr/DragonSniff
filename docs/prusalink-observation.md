@@ -4,6 +4,8 @@ DragonSniff can add read-only PrusaLink status observations to the same recorder
 
 This feature is evidence acquisition only. It cannot change a bed or nozzle target, start or stop a print, pause or resume a printer, select a Jump Jet mode, command a heater or fan, or reconstruct Jump Jet Automatic policy.
 
+Dragon-family firmware and DragonSniff use PrusaLink for different purposes. Firmware uses dragon-core's `dc_prusa` component as its reusable read-only printer client, and products such as JumpJet apply their own product-local policy and behavior to that data. DragonSniff's direct poll does not replace `dc_prusa`: it independently observes the same external printer source only as auxiliary validation evidence. That independence lets validation correlate what the printer reported with what the Dragon-family DUT reported or did, without relying solely on the DUT's interpretation or reconstructing product policy in DragonSniff. DragonSniff remains a Dragon-family validation and observability tool, not a generic printer-management tool.
+
 ## Configuration
 
 Set a PrusaLink origin and API key before starting DragonSniff:
@@ -30,19 +32,24 @@ A usable response must contain the complete core trio: a `printer` object with a
 
 `temp_nozzle` and `target_nozzle` are independent best-effort fields. A valid finite field is retained, an absent field is omitted, and a malformed or non-finite field is omitted without invalidating a good core sample. The record's bounded `omitted_optional_fields` list identifies malformed optional fields. No value is coerced, invented, or carried forward independently.
 
-Each attempt appends one `source_observation` record with:
+Each attempt appends one `source_observation` record. Its principal fields have these semantics:
 
-- normal recorder `sequence`, UTC `timestamp`, and `monotonic_ns`
-- `source: "prusalink"` and a normalized `source_id`
-- fixed `endpoint` and `method: "GET"`
-- DragonSniff request-start `observed_at` and `observed_monotonic_ns`
-- request elapsed time, HTTP status, connection/authentication state, and error class
-- `source_state` for the source lifecycle; `response_status` remains the numeric HTTP status
-- freshness state and sample age
-- a source-specific `data` object containing only the admitted fields
-- capture `run_id` and owner when the record belongs to a Thermal capture
+| Field | Meaning |
+|---|---|
+| `sequence` | Authoritative global arrival/commit order across Dragon and external-source records in the shared recorder. |
+| `timestamp` | DragonSniff UTC recorder-ingest timestamp assigned when the record is appended. |
+| `observed_at` | DragonSniff UTC request-start timestamp for this PrusaLink attempt. |
+| `source` | Stable source type; currently `"prusalink"`. |
+| `source_id` | Normalized identity of the configured PrusaLink origin. It contains no credentials. |
+| `source_state` | Lifecycle/result meaning such as `healthy`, `stale`, `auth_error`, or `parse_error`. It is not an HTTP status. |
+| `response_status` | Numeric HTTP response status when one was received; otherwise `null`. |
+| `freshness` | `fresh`, `stale`, or `unavailable`, plus age of the last successful core sample. |
+| `data` | Source-specific admitted fields from a successful core sample. |
+| `omitted_optional_fields` | Bounded names of malformed optional fields omitted from an otherwise healthy core sample. |
 
-PrusaLink does not provide a source timestamp in this endpoint. Both observation and recorder-ingest timestamps therefore come from DragonSniff; no printer-side timestamp is invented.
+Records also include the corresponding monotonic timestamps, elapsed request time, fixed `endpoint` and `method: "GET"`, connection/authentication observations, and structured error information. Thermal records include the capture `run_id` and owner.
+
+PrusaLink does not provide a source timestamp in this endpoint. Both `observed_at` and `timestamp` therefore come from DragonSniff; no printer-side timestamp is invented.
 
 The response body is not retained. This intentionally limits the source to the documented fields and prevents an untrusted endpoint from reflecting the configured credential into evidence. A printer-state value exactly equal to the configured credential is rejected as a structured sample rather than recorded. Equality avoids false rejection when a short, valid key happens to be a substring of an ordinary state such as `IDLE`; PrusaLink's accepted key handling does not provide a documented minimum length on which DragonSniff could safely rely.
 
