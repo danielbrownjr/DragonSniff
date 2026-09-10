@@ -33,6 +33,8 @@ Each request and response retains:
 
 Unknown and product-specific fields remain untouched. Missing optional fields do not fail a capture. State or health request failures increment visible counters and remain evidence rather than being converted into invented controller conclusions.
 
+When the optional PrusaLink source is configured, its read-only status attempts append `source_observation` records to this same recorder. Recorder `sequence` remains the authoritative cross-source arrival order. The source carries its own provenance, normalized printer fields, request timing, freshness, and failure state; it never adds printer fields to Dragon response records or reconstructs Jump Jet policy. See [Optional PrusaLink observations](prusalink-observation.md).
+
 Successfully decoded DUT text remains evidence even when syntactically valid JSON
 contains an unpaired surrogate escape. In that case the response text is retained
 exactly, while the parsed object is withheld from structured capture and local API
@@ -70,10 +72,14 @@ The resulting JSONL supports later analysis of temperatures, targets, requested 
 - 1–43,200 second duration bounds
 - 0.5–60 second state interval bounds
 - 5–300 second health interval bounds
-- Maximum 25,000 estimated scheduled records; each normal capture recorder also
+- Maximum 25,000 estimated Dragon scheduled records; each normal capture recorder also
   reserves space for up to 1,000 operator annotations so markers do not displace
-  nominal telemetry evidence. Memory-only and persistent capture paths use the
-  same `estimated_records + 1,000` capacity rule.
+  nominal telemetry evidence. An enabled PrusaLink source receives a separate
+  bounded polling allowance of at most 3,602 records. Memory-only and persistent
+  paths calculate the same combined capacity. The Dragon schedule and annotation
+  headroom are included in that capacity, but all kinds still share normal FIFO
+  eviction if actual source attempts exceed the capped estimate during a dense,
+  long capture. Persistent JSONL remains append-only.
 - Stop prevents future samples and retains everything already observed
 
 An in-flight read remains bounded by the existing client request timeout. While it finishes, the run truthfully remains `stopping`; a replacement observation, churn run, or capture cannot start.

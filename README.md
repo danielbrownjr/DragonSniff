@@ -27,6 +27,8 @@ DragonSniff makes only these device requests:
 - `GET /api/v2/health`
 - `GET /api/v2/events`
 
+When the optional PrusaLink observation source is configured, it additionally makes `GET /api/v1/status` to that separately configured printer. See [Optional PrusaLink observations](docs/prusalink-observation.md).
+
 There is no generic proxy and no device mutation route.
 
 ## Requirements and support
@@ -76,6 +78,8 @@ Storage defaults to 500 sessions and 256 MiB, with oldest finished sessions remo
 
 `DRAGONSNIFF_DATA_DIR`, `DRAGONSNIFF_ALLOWED_TARGETS`, `DRAGONSNIFF_ALLOWED_HOSTS`, `DRAGONSNIFF_REQUIRE_ALLOWLIST`, `DRAGONSNIFF_RETENTION_SESSIONS`, and `DRAGONSNIFF_RETENTION_BYTES` provide environment equivalents. Comma-separate multiple environment allowlist entries. `--allow-host` may be repeated to add exact browser authorities; loopback on the listening port remains accepted by default.
 
+Optional PrusaLink polling is disabled unless `DRAGONSNIFF_PRUSALINK_URL` (or `--prusalink-url`) and an API key are configured. Prefer `DRAGONSNIFF_PRUSALINK_API_KEY_FILE`; direct `DRAGONSNIFF_PRUSALINK_API_KEY` is intended for trusted development environments. The key is startup-only secret material and is never exposed through the browser, local API, evidence, or logs.
+
 `GET /healthz` reports whether the local web service is responsive and does not require device connectivity.
 
 DragonSniff does not open a browser itself. SIGINT and SIGTERM both trigger a shared 12-second maximum for session and worker cleanup before the HTTP server closes. The supported container configuration allows 20 seconds so active request handlers also have time to leave their five-second socket bound.
@@ -115,6 +119,7 @@ See the [direct trusted-LAN Portainer recipe](docs/portainer.md) for the NAS-val
 - **Observer:** fetches the three JSON endpoints and holds one SSE stream. Stop/reconnect controls affect the stream without silently replacing the session.
 - **Capture:** polls fixed state and health endpoints on a bounded schedule. It pauses live observation and restores it after cleanup.
 - **Operator annotation:** adds a local operator-time marker to a running Thermal capture without sending traffic to the observed device.
+- **PrusaLink observation:** optionally records read-only printer state and temperature context on the active observation or Thermal timeline. It pauses during Churn and never controls the printer.
 - **Churn:** performs bounded, sequential SSE lifecycle exercises. Capacity rejection and cleanup timing are retained as evidence.
 - **Session recorder:** stores ordered raw and parsed observations in bounded memory and, when configured, appends them to durable JSONL evidence.
 
@@ -133,6 +138,7 @@ The active-run downloads remain available. With persistent storage enabled, **Hi
 - [Getting started and concepts](https://github.com/danielbrownjr/DragonSniff/wiki)
 - [Passive thermal capture](docs/thermal-capture.md)
 - [Operator annotations](docs/operator-annotations.md)
+- [Optional PrusaLink observations](docs/prusalink-observation.md)
 - [Bounded SSE churn runner](docs/churn-runner.md)
 - [Dragon API findings](docs/dragon-api-findings.md)
 - [Hardware validation](docs/hardware-validation.md)
@@ -159,7 +165,7 @@ python -m unittest discover -s tests -v
 
 ## Status and boundaries
 
-DragonSniff is developer tooling at version 0.4.0. Live observation, bounded SSE churn, passive thermal capture, durable operator annotations, durable JSONL evidence, restart recovery, bounded retention, local Docker Compose, and direct trusted-LAN Portainer deployment are implemented and validated. Authentication, HTTPS, and public or untrusted-network operation are not.
+DragonSniff is developer tooling at version 0.4.0. Live observation, bounded SSE churn, passive thermal capture, optional read-only PrusaLink observations, durable operator annotations, durable JSONL evidence, restart recovery, bounded retention, local Docker Compose, and direct trusted-LAN Portainer deployment are implemented and validated. Authentication, HTTPS, and public or untrusted-network operation are not.
 
 The tool does not provide actuator controls, settings editing, PID tuning, OTA, provisioning, cloud telemetry, or safety policy. Device firmware remains responsible for authentication, validation, interlocks, and safe behavior.
 

@@ -5,10 +5,16 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+from pathlib import Path
 import signal
 from threading import Event, Thread
 from types import FrameType
 
+from .prusalink import (
+    DEFAULT_POLL_INTERVAL_SECONDS,
+    PrusaLinkConfig,
+    PrusaLinkConfigError,
+)
 from .server import DragonSniffServer, SessionManager, normalize_ui_authority
 from .storage import (
     DEFAULT_RETENTION_BYTES,
@@ -43,6 +49,13 @@ def _positive_int(value: str) -> int:
     return result
 
 
+def _number(value: str) -> float:
+    try:
+        return float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("value must be numeric") from exc
+
+
 def _environment_targets() -> list[str]:
     return [
         value.strip()
@@ -60,6 +73,29 @@ def _environment_hosts() -> list[str]:
         ]
     except ValueError as exc:
         raise SystemExit(f"invalid DRAGONSNIFF_ALLOWED_HOSTS: {exc}") from exc
+
+
+def _prusalink_api_key() -> str | None:
+    direct = os.environ.get("DRAGONSNIFF_PRUSALINK_API_KEY") or None
+    secret_path = os.environ.get("DRAGONSNIFF_PRUSALINK_API_KEY_FILE") or None
+    if direct is not None and secret_path:
+        raise SystemExit(
+            "configure only one of DRAGONSNIFF_PRUSALINK_API_KEY or "
+            "DRAGONSNIFF_PRUSALINK_API_KEY_FILE"
+        )
+    if not secret_path:
+        return direct
+    try:
+        encoded = Path(secret_path).read_bytes()
+    except OSError as exc:
+        raise SystemExit("could not read PrusaLink API key file") from exc
+    # Up to 256 key bytes, an optional UTF-8 BOM, and a trailing CRLF.
+    if len(encoded) > 261:
+        raise SystemExit("PrusaLink API key file is too large")
+    try:
+        return encoded.decode("utf-8-sig").rstrip("\r\n")
+    except UnicodeDecodeError as exc:
+        raise SystemExit("PrusaLink API key file must be UTF-8 text") from exc
 
 
 def _allowed_host(value: str) -> str:
@@ -142,6 +178,20 @@ def parser() -> argparse.ArgumentParser:
         in {"1", "true", "yes"},
         help="refuse startup unless at least one target is explicitly allowed",
     )
+    value.add_argument(
+        "--prusalink-url",
+        default=os.environ.get("DRAGONSNIFF_PRUSALINK_URL"),
+        help="optional PrusaLink HTTP(S) origin; disabled when omitted",
+    )
+    value.add_argument(
+        "--prusalink-poll-interval",
+        type=_number,
+        default=os.environ.get(
+            "DRAGONSNIFF_PRUSALINK_POLL_INTERVAL",
+            str(DEFAULT_POLL_INTERVAL_SECONDS),
+        ),
+        help="PrusaLink polling interval in seconds (default: 5; bounds: 1-60)",
+    )
     return value
 
 
@@ -177,6 +227,14 @@ def main() -> int:
     )
     if args.require_allowlist and not args.allow_target:
         raise SystemExit("at least one --allow-target is required")
+    try:
+        prusalink_config = PrusaLinkConfig.from_values(
+            args.prusalink_url,
+            _prusalink_api_key(),
+            args.prusalink_poll_interval,
+        )
+    except PrusaLinkConfigError as exc:
+        raise SystemExit(str(exc)) from exc
     store = (
         SessionStore(
             args.data_dir,
@@ -186,7 +244,11 @@ def main() -> int:
         if args.data_dir
         else None
     )
-    manager = SessionManager(store=store, allowed_targets=args.allow_target)
+    manager = SessionManager(
+        store=store,
+        allowed_targets=args.allow_target,
+        prusalink_config=prusalink_config,
+    )
     server = DragonSniffServer(
         (args.bind, args.port),
         manager,

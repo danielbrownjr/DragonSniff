@@ -10,6 +10,7 @@ from unittest.mock import patch
 from uuid import uuid4
 
 from dragonsniff.capture import CaptureConfig
+from dragonsniff.prusalink import PrusaLinkConfig
 from dragonsniff.recording import SessionRecorder
 from dragonsniff.server import (
     MAX_ANNOTATION_REQUEST_BYTES,
@@ -227,6 +228,19 @@ class ServerTests(TestCase):
             status, body, _ = local.request("GET", "/local/v1/session")
             self.assertEqual(status, 200)
             self.assertEqual(json.loads(body)["session_state"], "idle")
+
+    def test_idle_local_state_exposes_prusalink_configuration_without_secret(self) -> None:
+        config = PrusaLinkConfig.from_values(
+            "http://prusa.local", "do-not-serialize-this", 7
+        )
+        snapshot = SessionManager(prusalink_config=config).snapshot()
+        serialized = json.dumps(snapshot)
+
+        self.assertTrue(snapshot["prusalink"]["configured"])
+        self.assertEqual(snapshot["prusalink"]["source_state"], "configured")
+        self.assertEqual(snapshot["prusalink"]["source_id"], "http://prusa.local")
+        self.assertEqual(snapshot["prusalink"]["poll_interval_seconds"], 7)
+        self.assertNotIn("do-not-serialize-this", serialized)
 
     def test_missing_current_and_automation_exports_return_not_found(self) -> None:
         with LocalServerFixture() as local:

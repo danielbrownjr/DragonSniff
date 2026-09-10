@@ -1,11 +1,16 @@
 import time
 import threading
+from tempfile import TemporaryDirectory
 from typing import Callable
 from unittest import TestCase
+from urllib.error import URLError
 
 from dragonsniff.client import DragonClient
-from dragonsniff.observer import Observer
+from dragonsniff.observer import BASE_LIVE_RECORDS, Observer
 from dragonsniff.recording import SessionRecorder
+from dragonsniff.prusalink import PrusaLinkConfig, PrusaLinkSource
+from dragonsniff.server import SessionManager
+from dragonsniff.storage import SessionStore
 from dragonsniff.target import parse_target
 
 from tests.test_client import DeviceFixture
@@ -21,6 +26,147 @@ def wait_until(predicate: Callable[[], bool], timeout: float = 2.0) -> None:
 
 
 class ObserverTests(TestCase):
+    def test_prusalink_failure_does_not_interrupt_dragon_observation(self) -> None:
+        with DeviceFixture() as fixture:
+            target = parse_target(fixture.target)
+            config = PrusaLinkConfig.from_values("prusa.local", "secret", 1)
+            reserve = config.live_observation_reserved_records()
+            recorder = SessionRecorder(max_records=50 + reserve)
+            client = DragonClient(target, recorder)
+
+            def unavailable(*_args, **_kwargs):
+                raise URLError("printer unavailable")
+
+            source = PrusaLinkSource(config, recorder, opener=unavailable)
+            observer = Observer(
+                target,
+                max_records=50,
+                client=client,
+                prusalink_source=source,
+            )
+            observer.start()
+            wait_until(lambda: observer.snapshot()["sse"]["state"] == "closed")
+            wait_until(
+                lambda: observer.snapshot()["prusalink"]["source_state"]
+                == "transport_error"
+            )
+            snapshot = observer.snapshot()
+            observer.stop()
+
+        self.assertEqual(snapshot["session_state"], "observing")
+        self.assertEqual(snapshot["prusalink"]["source_state"], "transport_error")
+        self.assertTrue(any(
+            record["kind"] == "source_observation"
+            and record["source"] == "prusalink"
+            and record["owner"] == "observation"
+            for record in recorder.snapshot()
+        ))
+        self.assertFalse(source.is_alive)
+
+    def test_prusalink_internal_failure_does_not_interrupt_dragon_observation(
+        self,
+    ) -> None:
+        with DeviceFixture() as fixture:
+            target = parse_target(fixture.target)
+            config = PrusaLinkConfig.from_values("prusa.local", "secret", 1)
+            recorder = SessionRecorder(
+                max_records=50 + config.live_observation_reserved_records()
+            )
+            client = DragonClient(target, recorder)
+            source = PrusaLinkSource(
+                config,
+                recorder,
+                opener=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                    RuntimeError("unexpected source failure")
+                ),
+            )
+            observer = Observer(
+                target,
+                max_records=50,
+                client=client,
+                prusalink_source=source,
+            )
+            observer.start()
+            wait_until(lambda: not source.is_alive)
+            wait_until(lambda: observer.snapshot()["sse"]["state"] == "closed")
+            snapshot = observer.snapshot()
+            observer.stop()
+
+        self.assertEqual(snapshot["session_state"], "observing")
+        self.assertEqual(snapshot["prusalink"]["source_state"], "internal_error")
+        self.assertFalse(snapshot["prusalink"]["polling"])
+        self.assertTrue(
+            any(record["kind"] == "http_response" for record in recorder.snapshot())
+        )
+
+    def test_live_capacity_is_unchanged_when_prusalink_is_disabled(self) -> None:
+        observer = Observer(parse_target("dragon.local"))
+
+        self.assertEqual(observer.recorder.max_records, BASE_LIVE_RECORDS)
+        self.assertEqual(observer.limits()["base_live_records"], BASE_LIVE_RECORDS)
+        self.assertEqual(observer.limits()["source_reserved_records"], 0)
+
+    def test_live_capacity_preserves_baseline_plus_bounded_source_reserve(self) -> None:
+        expected = {1: 3_602, 5: 722, 60: 62}
+        for interval, reserve in expected.items():
+            with self.subTest(interval=interval):
+                config = PrusaLinkConfig.from_values(
+                    "prusa.local", "secret", interval
+                )
+                observer = Observer(
+                    parse_target("dragon.local"), prusalink_config=config
+                )
+                self.assertEqual(
+                    config.live_observation_reserved_records(), reserve
+                )
+                self.assertEqual(
+                    observer.recorder.max_records, BASE_LIVE_RECORDS + reserve
+                )
+                self.assertEqual(
+                    observer.limits()["source_reserved_records"], reserve
+                )
+
+    def test_memory_and_persistent_observers_use_equivalent_live_capacity(self) -> None:
+        config = PrusaLinkConfig.from_values("prusa.local", "secret", 5)
+        memory = SessionManager(prusalink_config=config)._new_observer(
+            parse_target("dragon.local")
+        )
+        with TemporaryDirectory() as temporary:
+            persistent = SessionManager(
+                store=SessionStore(temporary), prusalink_config=config
+            )._new_observer(parse_target("dragon.local"))
+
+        self.assertEqual(memory.recorder.max_records, 2_722)
+        self.assertEqual(
+            persistent.recorder.max_records, memory.recorder.max_records
+        )
+        self.assertIs(memory.prusalink.recorder, memory.recorder)
+        self.assertIs(persistent.prusalink.recorder, persistent.recorder)
+
+    def test_interleaved_live_records_share_fifo_and_global_sequence(self) -> None:
+        config = PrusaLinkConfig.from_values("prusa.local", "secret", 60)
+        observer = Observer(
+            parse_target("dragon.local"), prusalink_config=config
+        )
+        reserve = config.live_observation_reserved_records()
+
+        inserted = []
+        for index in range(observer.recorder.max_records + 20):
+            kind = "source_observation" if index % 5 == 0 else "dragon"
+            inserted.append(observer.recorder.append(kind, index=index))
+
+        records = observer.recorder.snapshot()
+        self.assertEqual(observer.recorder.summary()["dropped_records"], 20)
+        self.assertEqual(records, inserted[-(BASE_LIVE_RECORDS + reserve):])
+        self.assertTrue(any(record["kind"] == "dragon" for record in records))
+        self.assertTrue(
+            any(record["kind"] == "source_observation" for record in records)
+        )
+        self.assertEqual(
+            [record["sequence"] for record in records],
+            list(range(21, BASE_LIVE_RECORDS + reserve + 21)),
+        )
+
     def test_session_fetches_all_endpoints_and_streams_then_cleans_up(self) -> None:
         with DeviceFixture() as fixture:
             target = parse_target(fixture.target)

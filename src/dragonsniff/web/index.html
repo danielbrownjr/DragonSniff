@@ -92,6 +92,25 @@
       <article class="metric"><span>Session records</span><strong id="recordCount">0</strong></article>
     </section>
 
+    <section class="card" data-page-content="dashboard thermal" aria-labelledby="prusalink-heading">
+      <div class="endpoint-heading">
+        <div>
+          <p class="eyebrow">Optional external observation</p>
+          <h2 id="prusalink-heading">PrusaLink</h2>
+          <p>Read-only printer context recorded beside Dragon evidence. No printer actions are available.</p>
+        </div>
+        <span id="prusalinkStatus" class="endpoint-state" data-status="disabled">Disabled</span>
+      </div>
+      <div class="churn-metrics" aria-label="PrusaLink observation status">
+        <div><span>Polling</span><strong id="prusalinkPolling">Disabled</strong></div>
+        <div><span>Connection</span><strong id="prusalinkConnection">Not configured</strong></div>
+        <div><span>Printer state</span><strong id="prusalinkPrinterState">—</strong></div>
+        <div><span>Bed actual / target</span><strong id="prusalinkBed">—</strong></div>
+        <div><span>Freshness</span><strong id="prusalinkFreshness">No sample</strong></div>
+      </div>
+      <p id="prusalinkError" class="notice" hidden></p>
+    </section>
+
     <section class="card history-card" data-page-content="history" aria-labelledby="history-heading" hidden>
       <div class="endpoint-heading">
         <div>
