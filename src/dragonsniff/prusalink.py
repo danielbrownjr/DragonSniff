@@ -33,6 +33,11 @@ MAX_RETRY_INTERVAL_SECONDS = 60.0
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 5.0
 MAX_RESPONSE_BYTES = 64 * 1024
 CAPTURE_BOUNDARY_REQUEST_SECONDS = 20.0
+LIVE_HISTORY_HORIZON_SECONDS = 60 * 60
+LIVE_BOUNDARY_RECORDS = 2
+MAX_LIVE_RESERVED_RECORDS = LIVE_HISTORY_HORIZON_SECONDS + LIVE_BOUNDARY_RECORDS
+MAX_SOURCE_ID_CHARACTERS = 2_048
+MAX_PRINTER_STATE_CHARACTERS = 128
 API_KEY_PATTERN = re.compile(r"[!-~]{1,256}\Z")
 
 
@@ -69,6 +74,8 @@ class PrusaLinkConfig:
             return cls()
         if not isinstance(supplied_url, str):
             raise PrusaLinkConfigError("PrusaLink URL must be text")
+        if len(supplied_url) > MAX_SOURCE_ID_CHARACTERS:
+            raise PrusaLinkConfigError("PrusaLink URL is too long")
         try:
             target = parse_target(supplied_url)
         except TargetValidationError as exc:
@@ -124,6 +131,18 @@ class PrusaLinkConfig:
             + 2
         )
 
+    def live_observation_reserved_records(self) -> int:
+        """Bound source headroom to one rolling hour, never session duration."""
+        if not self.enabled:
+            return 0
+        return min(
+            MAX_LIVE_RESERVED_RECORDS,
+            math.ceil(
+                LIVE_HISTORY_HORIZON_SECONDS / self.poll_interval_seconds
+            )
+            + LIVE_BOUNDARY_RECORDS,
+        )
+
     def public_snapshot(self, *, state: str | None = None) -> dict[str, Any]:
         if not self.enabled:
             return {
@@ -161,7 +180,7 @@ def _finite_number(value: object, name: str) -> float:
     return result
 
 
-def parse_prusalink_status(value: object) -> dict[str, Any]:
+def parse_prusalink_status(value: object) -> tuple[dict[str, Any], list[str]]:
     """Admit only the small, documented status subset used as evidence."""
     if not isinstance(value, dict):
         raise PrusaLinkPayloadError("PrusaLink status must be a JSON object")
@@ -169,22 +188,31 @@ def parse_prusalink_status(value: object) -> dict[str, Any]:
     if not isinstance(printer, dict):
         raise PrusaLinkPayloadError("PrusaLink status must contain printer object")
     state = printer.get("state")
-    if not isinstance(state, str) or not state:
-        raise PrusaLinkPayloadError("printer.state must be non-empty text")
+    if (
+        not isinstance(state, str)
+        or not state.strip()
+        or len(state) > MAX_PRINTER_STATE_CHARACTERS
+    ):
+        raise PrusaLinkPayloadError(
+            "printer.state must be 1-128 non-blank text characters"
+        )
     result: dict[str, Any] = {
         "printer_state": state,
         "bed_temperature_c": _finite_number(printer.get("temp_bed"), "temp_bed"),
         "bed_target_c": _finite_number(printer.get("target_bed"), "target_bed"),
     }
-    if "temp_nozzle" in printer:
-        result["nozzle_temperature_c"] = _finite_number(
-            printer["temp_nozzle"], "temp_nozzle"
-        )
-    if "target_nozzle" in printer:
-        result["nozzle_target_c"] = _finite_number(
-            printer["target_nozzle"], "target_nozzle"
-        )
-    return result
+    omitted_optional_fields: list[str] = []
+    for source_name, output_name in (
+        ("temp_nozzle", "nozzle_temperature_c"),
+        ("target_nozzle", "nozzle_target_c"),
+    ):
+        if source_name not in printer:
+            continue
+        try:
+            result[output_name] = _finite_number(printer[source_name], source_name)
+        except PrusaLinkPayloadError:
+            omitted_optional_fields.append(source_name)
+    return result, omitted_optional_fields
 
 
 class PrusaLinkSource:
@@ -319,7 +347,7 @@ class PrusaLinkSource:
                 )
             else:
                 try:
-                    data = parse_prusalink_status(parsed)
+                    data, omitted_optional_fields = parse_prusalink_status(parsed)
                 except PrusaLinkPayloadError as exc:
                     fields = self._parse_failure_fields(
                         response_status, None, str(exc), "schema"
@@ -344,6 +372,7 @@ class PrusaLinkSource:
                             "decode_error": None,
                             "parse_error": None,
                             "parse_error_kind": None,
+                            "omitted_optional_fields": omitted_optional_fields,
                             "data": data,
                             "error": None,
                         }
@@ -420,6 +449,7 @@ class PrusaLinkSource:
             "decode_error": decode_error,
             "parse_error": None,
             "parse_error_kind": None,
+            "omitted_optional_fields": [],
             "data": None,
             "response_too_large": False,
             "error": {
@@ -448,6 +478,7 @@ class PrusaLinkSource:
             "decode_error": decode_error,
             "parse_error": parse_error,
             "parse_error_kind": parse_error_kind,
+            "omitted_optional_fields": [],
             "data": None,
             "response_too_large": False,
             "error": {"kind": parse_error_kind, "message": message[:512]},
@@ -467,6 +498,7 @@ class PrusaLinkSource:
             "decode_error": None,
             "parse_error": None,
             "parse_error_kind": None,
+            "omitted_optional_fields": [],
             "data": None,
             "response_too_large": kind == "response_too_large",
             "error": {"kind": kind, "message": message[:512]},

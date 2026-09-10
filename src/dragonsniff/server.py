@@ -26,7 +26,7 @@ from .annotations import (
 )
 from .capture import CaptureConfig, CaptureRunner
 from .churn import ChurnConfig, ChurnRunner
-from .observer import Observer
+from .observer import BASE_LIVE_RECORDS, Observer
 from .prusalink import PrusaLinkConfig
 from .recording import SessionRecorder
 from .storage import SessionStore, export_filename, is_valid_session_id
@@ -584,7 +584,10 @@ class SessionManager:
                 return Observer(target, prusalink_config=self._prusalink_config)
             return Observer(target)
         recorder = self._store.create_recorder(
-            "observation", target.base_url, 2_000
+            "observation",
+            target.base_url,
+            BASE_LIVE_RECORDS
+            + self._prusalink_config.live_observation_reserved_records(),
         )
         if not self._prusalink_config.enabled:
             return Observer(target, recorder=recorder)
@@ -768,7 +771,11 @@ class SessionManager:
             "start_timestamp": None,
             "end_timestamp": None,
             "elapsed_ms": 0.0,
-            "recorder": {"records": 0, "max_records": 2_000, "dropped_records": 0},
+            "recorder": {
+                "records": 0,
+                "max_records": BASE_LIVE_RECORDS,
+                "dropped_records": 0,
+            },
             "recent_records": [],
             "prusalink": PrusaLinkConfig().public_snapshot(),
         }
@@ -781,13 +788,19 @@ class SessionManager:
             "target": None,
             "http": {},
             "sse": {"state": "not_connected", "events": 0},
-            "recorder": {"records": 0, "max_records": 2_000, "dropped_records": 0},
+            "recorder": {
+                "records": 0,
+                "max_records": BASE_LIVE_RECORDS,
+                "dropped_records": 0,
+            },
             "limits": {
                 "device_connection_limit": 2,
                 "active_device_connections": 0,
                 "max_response_bytes": 1_048_576,
                 "max_sse_event_bytes": 262_144,
-                "max_session_records": 2_000,
+                "max_session_records": BASE_LIVE_RECORDS,
+                "base_live_records": BASE_LIVE_RECORDS,
+                "source_reserved_records": 0,
                 "local_request_concurrency": 8,
                 "sse_connect_timeout_seconds": 5.0,
                 "sse_inactivity_timeout": "disabled",

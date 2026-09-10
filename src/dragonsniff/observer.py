@@ -13,6 +13,9 @@ from .recording import SessionRecorder
 from .target import DeviceTarget
 
 
+BASE_LIVE_RECORDS = 2_000
+
+
 class Observer:
     """Own one bounded Dragon observation session and its lifecycle."""
 
@@ -20,27 +23,36 @@ class Observer:
         self,
         target: DeviceTarget,
         *,
-        max_records: int = 2_000,
+        max_records: int = BASE_LIVE_RECORDS,
         connection_limit: int = 2,
         recorder: SessionRecorder | None = None,
         client: DragonClient | None = None,
         prusalink_config: PrusaLinkConfig | None = None,
         prusalink_source: PrusaLinkSource | None = None,
     ) -> None:
-        self.target = target
-        self.recorder = (
-            client.recorder
-            if client is not None
-            else (recorder or SessionRecorder(max_records))
-        )
-        self.client = client or DragonClient(
-            target, self.recorder, connection_limit=connection_limit
-        )
         source_config = (
             prusalink_config
             or (prusalink_source.config if prusalink_source is not None else None)
             or PrusaLinkConfig()
         )
+        source_reserved_records = source_config.live_observation_reserved_records()
+        required_records = max_records + source_reserved_records
+        self.target = target
+        self.recorder = (
+            client.recorder
+            if client is not None
+            else (recorder or SessionRecorder(required_records))
+        )
+        if source_config.enabled and self.recorder.max_records < required_records:
+            raise ValueError(
+                "PrusaLink live recorder is smaller than the Dragon baseline "
+                "plus source reserve"
+            )
+        self.client = client or DragonClient(
+            target, self.recorder, connection_limit=connection_limit
+        )
+        self._base_live_records = max_records
+        self._source_reserved_records = source_reserved_records
         self.prusalink = prusalink_source or PrusaLinkSource(
             source_config, self.recorder
         )
@@ -244,6 +256,8 @@ class Observer:
             "max_response_bytes": self.client.max_response_bytes,
             "max_sse_event_bytes": self.client.max_event_bytes,
             "max_session_records": self.recorder.max_records,
+            "base_live_records": self._base_live_records,
+            "source_reserved_records": self._source_reserved_records,
             "local_request_concurrency": 8,
             "sse_connect_timeout_seconds": self.client.sse_connect_timeout,
             "sse_inactivity_timeout": "disabled",

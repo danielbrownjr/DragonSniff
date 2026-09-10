@@ -217,6 +217,154 @@ class PrusaLinkSourceTests(TestCase):
                 self.assertEqual(record["parse_error_kind"], kind)
                 self.assertIsNone(record["data"])
 
+    def test_core_fields_are_all_or_nothing(self) -> None:
+        invalid_printers = (
+            {"temp_bed": 20, "target_bed": 0},
+            {"state": "IDLE", "target_bed": 0},
+            {"state": "IDLE", "temp_bed": 20},
+            {"state": "", "temp_bed": 20, "target_bed": 0},
+            {"state": "   ", "temp_bed": 20, "target_bed": 0},
+            {"state": "IDLE", "temp_bed": float("inf"), "target_bed": 0},
+            {"state": "IDLE", "temp_bed": 20, "target_bed": float("nan")},
+        )
+        for printer in invalid_printers:
+            with self.subTest(printer=printer):
+                body = json.dumps({"printer": printer}).encode()
+                source = PrusaLinkSource(
+                    self.config,
+                    SessionRecorder(10),
+                    opener=lambda *_args, **_kwargs: FakeResponse(body),
+                )
+
+                record = source.poll_once()
+
+                self.assertEqual(record["status"], "parse_error")
+                self.assertEqual(record["parse_error_kind"], "schema")
+                self.assertIsNone(record["data"])
+
+    def test_failed_core_sample_does_not_refresh_last_good_freshness(self) -> None:
+        clock = Clock()
+        bodies = [
+            status_body(),
+            b'{"printer":{"state":"IDLE","temp_bed":20}}',
+        ]
+        source = PrusaLinkSource(
+            self.config,
+            self.recorder,
+            opener=lambda *_args, **_kwargs: FakeResponse(bodies.pop(0)),
+            monotonic_ns=clock,
+        )
+        first = source.poll_once()
+        first_success = source.snapshot()["last_success_timestamp"]
+        clock.nanoseconds = 16_000_000_000
+
+        failed = source.poll_once()
+        snapshot = source.snapshot()
+
+        self.assertEqual(first["freshness"]["sample_age_ms"], 0)
+        self.assertEqual(failed["status"], "parse_error")
+        self.assertEqual(failed["freshness"]["state"], "stale")
+        self.assertEqual(failed["freshness"]["sample_age_ms"], 16_000)
+        self.assertEqual(snapshot["last_success_timestamp"], first_success)
+        self.assertEqual(snapshot["data"]["printer_state"], "PRINTING")
+
+    def test_optional_nozzle_fields_are_best_effort(self) -> None:
+        printers = (
+            (
+                {"state": "IDLE", "temp_bed": 20, "target_bed": 0},
+                {},
+                [],
+            ),
+            (
+                {
+                    "state": "IDLE",
+                    "temp_bed": 20,
+                    "target_bed": 0,
+                    "temp_nozzle": 21.5,
+                    "target_nozzle": 215,
+                },
+                {"nozzle_temperature_c": 21.5, "nozzle_target_c": 215.0},
+                [],
+            ),
+            (
+                {
+                    "state": "IDLE",
+                    "temp_bed": 20,
+                    "target_bed": 0,
+                    "temp_nozzle": "hot",
+                    "target_nozzle": 215,
+                },
+                {"nozzle_target_c": 215.0},
+                ["temp_nozzle"],
+            ),
+            (
+                {
+                    "state": "IDLE",
+                    "temp_bed": 20,
+                    "target_bed": 0,
+                    "temp_nozzle": 21.5,
+                    "target_nozzle": float("inf"),
+                },
+                {"nozzle_temperature_c": 21.5},
+                ["target_nozzle"],
+            ),
+        )
+        for printer, optional_data, omitted in printers:
+            with self.subTest(printer=printer):
+                body = json.dumps({"printer": printer}).encode()
+                source = PrusaLinkSource(
+                    self.config,
+                    SessionRecorder(10),
+                    opener=lambda *_args, **_kwargs: FakeResponse(body),
+                )
+
+                record = source.poll_once()
+
+                self.assertEqual(record["status"], "healthy")
+                self.assertEqual(record["omitted_optional_fields"], omitted)
+                self.assertEqual(record["data"]["printer_state"], "IDLE")
+                self.assertEqual(record["data"]["bed_temperature_c"], 20.0)
+                self.assertEqual(record["data"]["bed_target_c"], 0.0)
+                for name, value in optional_data.items():
+                    self.assertEqual(record["data"][name], value)
+                absent = {
+                    "nozzle_temperature_c",
+                    "nozzle_target_c",
+                } - set(optional_data)
+                self.assertTrue(absent.isdisjoint(record["data"]))
+
+    def test_optional_schema_issue_still_refreshes_a_valid_core_sample(self) -> None:
+        clock = Clock()
+        bodies = [
+            status_body(),
+            json.dumps(
+                {
+                    "printer": {
+                        "state": "IDLE",
+                        "temp_bed": 21,
+                        "target_bed": 0,
+                        "temp_nozzle": False,
+                    }
+                }
+            ).encode(),
+        ]
+        source = PrusaLinkSource(
+            self.config,
+            self.recorder,
+            opener=lambda *_args, **_kwargs: FakeResponse(bodies.pop(0)),
+            monotonic_ns=clock,
+        )
+        source.poll_once()
+        clock.nanoseconds = 16_000_000_000
+
+        record = source.poll_once()
+
+        self.assertEqual(record["status"], "healthy")
+        self.assertEqual(record["freshness"]["state"], "fresh")
+        self.assertEqual(record["freshness"]["sample_age_ms"], 0)
+        self.assertEqual(record["omitted_optional_fields"], ["temp_nozzle"])
+        self.assertNotIn("nozzle_temperature_c", record["data"])
+
     def test_unsafe_decoded_unicode_never_enters_source_evidence(self) -> None:
         source = PrusaLinkSource(
             self.config,

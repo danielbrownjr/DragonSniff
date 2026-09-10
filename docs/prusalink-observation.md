@@ -26,7 +26,9 @@ No generic PrusaLink proxy or write-capable route exists.
 
 ## Captured fields and evidence envelope
 
-A usable response must contain a `printer` object with a non-empty string `state` and finite numeric `temp_bed` and `target_bed` fields. When naturally present, finite `temp_nozzle` and `target_nozzle` values are also retained. Unknown printer-state strings are preserved as observations; DragonSniff does not interpret them as policy.
+A usable response must contain the complete core trio: a `printer` object with a non-blank string `state` (at most 128 characters) and finite numeric `temp_bed` and `target_bed` fields. If any core field is absent or invalid, the entire poll is a schema failure and does not refresh the last-good timestamp. Unknown valid printer-state strings are preserved as observations; DragonSniff does not interpret them as policy.
+
+`temp_nozzle` and `target_nozzle` are independent best-effort fields. A valid finite field is retained, an absent field is omitted, and a malformed or non-finite field is omitted without invalidating a good core sample. The record's bounded `omitted_optional_fields` list identifies malformed optional fields. No value is coerced, invented, or carried forward independently.
 
 Each attempt appends one `source_observation` record with:
 
@@ -44,6 +46,8 @@ PrusaLink does not provide a source timestamp in this endpoint. Both observation
 The response body is not retained. This intentionally limits the source to the documented fields and prevents an untrusted endpoint from reflecting the configured credential into evidence. A response whose admitted text overlaps the credential is rejected as a structured sample rather than repaired or recorded.
 
 `source_observation` is an additive record kind in the existing format-version 1 JSONL stream. Existing records and readers remain valid; consumers that do not recognize the new kind may ignore it. Thermal recorders reserve worst-case source polling headroom—including the bounded initial/final Dragon fetch window—separately from the existing Dragon schedule and 1,000-annotation reserve.
+
+Live observation keeps the established 2,000-record Dragon baseline and adds a deterministic Prusa reserve for a one-hour rolling diagnostic horizon, plus two scheduling-boundary records. The formula is `2,000 + min(3,602, ceil(3,600 / poll_interval_seconds) + 2)`. The total capacities are therefore 5,602 records at 1-second polling, 2,722 at the default 5 seconds, and 2,062 at 60 seconds. One hour corresponds approximately to the existing live window under the currently observed two-second Dragon event cadence without turning that device cadence into a protocol promise. The expansion is capped, records retain one shared sequence, and normalized source records never retain the response body.
 
 ## Freshness and failure behavior
 
