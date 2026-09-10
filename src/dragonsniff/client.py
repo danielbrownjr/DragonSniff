@@ -19,9 +19,18 @@ from .target import DeviceTarget
 
 JSON_ENDPOINTS = ("/api/v2/info", "/api/v2/state", "/api/v2/health")
 EVENTS_ENDPOINT = "/api/v2/events"
+MAX_PARSED_JSON_DEPTH = 128
 
 
 class ResponseTooLargeError(RuntimeError):
+    pass
+
+
+class UnsafeParsedUnicodeError(ValueError):
+    pass
+
+
+class ParsedJsonTooDeepError(ValueError):
     pass
 
 
@@ -76,11 +85,62 @@ def _decode(body: bytes) -> tuple[str, str | None]:
         return body.decode("utf-8", errors="replace"), str(exc)
 
 
-def _parse_json(raw: str) -> tuple[Any, str | None]:
+def _validate_parsed_text(value: Any) -> None:
+    """Reject decoded JSON text that cannot safely enter local UTF-8 surfaces.
+
+    Paths use object positions rather than device-controlled keys so the error
+    itself is always safe to serialize. Raw DUT evidence is retained separately
+    and never passes through this structured-value admission check.
+    """
+    stack: list[tuple[Any, str, int]] = [(value, "$", 0)]
+    while stack:
+        current, path, depth = stack.pop()
+        if depth > MAX_PARSED_JSON_DEPTH:
+            raise ParsedJsonTooDeepError(
+                f"parsed JSON exceeds maximum structured depth at {path}"
+            )
+        if isinstance(current, str):
+            try:
+                current.encode("utf-8")
+            except UnicodeEncodeError as exc:
+                raise UnsafeParsedUnicodeError(
+                    f"parsed JSON contains non-UTF-8-encodable text at {path}"
+                ) from exc
+        elif isinstance(current, list):
+            stack.extend(
+                (item, f"{path}/[{index}]", depth + 1)
+                for index, item in reversed(tuple(enumerate(current)))
+            )
+        elif isinstance(current, dict):
+            children: list[tuple[Any, str, int]] = []
+            for index, (key, item) in enumerate(current.items()):
+                children.append((key, f"{path}/{{object-key:{index}}}", depth + 1))
+                children.append((item, f"{path}/{{object-value:{index}}}", depth + 1))
+            stack.extend(reversed(children))
+
+
+def _parse_json(raw: str) -> tuple[Any, str | None, str | None]:
     try:
-        return json.loads(raw), None
+        parsed = json.loads(raw)
     except json.JSONDecodeError as exc:
-        return None, str(exc)
+        return None, str(exc), "syntax"
+    except RecursionError:
+        return None, "JSON nesting exceeds the decoder limit", "structure_too_deep"
+    try:
+        _validate_parsed_text(parsed)
+    except UnsafeParsedUnicodeError as exc:
+        return None, str(exc), "unsafe_text"
+    except ParsedJsonTooDeepError as exc:
+        return None, str(exc), "structure_too_deep"
+    return parsed, None, None
+
+
+def _parse_decoded_json(
+    raw: str, decode_error: str | None
+) -> tuple[Any, str | None, str | None]:
+    if decode_error is not None:
+        return None, None, None
+    return _parse_json(raw)
 
 
 def _response_socket(response: Any) -> socket.socket | None:
@@ -146,6 +206,8 @@ class DragonClient:
         request_id = self._request_id()
         url = self.target.endpoint(path)
         started = time.monotonic_ns()
+        status: int | None = None
+        headers: dict[str, str] = {}
         record_context = dict(context or {})
         self.recorder.append(
             "http_request", **record_context, request_id=request_id, method="GET", endpoint=path
@@ -157,8 +219,12 @@ class DragonClient:
                     headers = _headers(response)
                     body = _read_bounded(response, self.max_response_bytes)
             raw, decode_error = _decode(body)
-            parsed, parse_error = _parse_json(raw)
+            parsed, parse_error, parse_error_kind = _parse_decoded_json(
+                raw, decode_error
+            )
             elapsed_ms = (time.monotonic_ns() - started) / 1_000_000
+            http_ok = 200 <= status < 300
+            parsed_available = decode_error is None and parse_error_kind is None
             result = {
                 "request_id": request_id,
                 "endpoint": path,
@@ -169,7 +235,12 @@ class DragonClient:
                 "parsed": parsed,
                 "decode_error": decode_error,
                 "parse_error": parse_error,
-                "ok": 200 <= status < 300 and parse_error is None,
+                "parse_error_kind": parse_error_kind,
+                "parsed_available": parsed_available,
+                "response_received": True,
+                "http_ok": http_ok,
+                "response_too_large": False,
+                "ok": http_ok and parsed_available,
             }
             self.recorder.append("http_response", **record_context, **result)
             return result
@@ -179,10 +250,14 @@ class DragonClient:
             if too_large:
                 body = body[: self.max_response_bytes]
             raw, decode_error = _decode(body)
-            parsed, parse_error = _parse_json(raw)
             if too_large:
                 parsed = None
-                parse_error = "response too large"
+                parse_error = None
+                parse_error_kind = None
+            else:
+                parsed, parse_error, parse_error_kind = _parse_decoded_json(
+                    raw, decode_error
+                )
             result = {
                 "request_id": request_id,
                 "endpoint": path,
@@ -193,15 +268,42 @@ class DragonClient:
                 "parsed": parsed,
                 "decode_error": decode_error,
                 "parse_error": parse_error,
+                "parse_error_kind": parse_error_kind,
+                "parsed_available": not too_large
+                and decode_error is None
+                and parse_error_kind is None,
+                "response_received": True,
+                "http_ok": False,
+                "response_too_large": too_large,
                 "ok": False,
             }
             self.recorder.append("http_response", **record_context, **result)
+            return result
+        except ResponseTooLargeError as exc:
+            result = {
+                "request_id": request_id,
+                "endpoint": path,
+                "status": status,
+                "elapsed_ms": round((time.monotonic_ns() - started) / 1_000_000, 3),
+                "headers": headers,
+                "raw_payload": None,
+                "parsed": None,
+                "decode_error": None,
+                "parse_error": None,
+                "parse_error_kind": None,
+                "parsed_available": False,
+                "response_received": status is not None,
+                "http_ok": status is not None and 200 <= status < 300,
+                "response_too_large": True,
+                "error": f"{type(exc).__name__}: {exc}",
+                "ok": False,
+            }
+            self.recorder.append("http_error", **record_context, **result)
             return result
         except (
             OSError,
             URLError,
             TimeoutError,
-            ResponseTooLargeError,
             HTTPException,
         ) as exc:
             result = {
@@ -209,6 +311,15 @@ class DragonClient:
                 "endpoint": path,
                 "status": None,
                 "elapsed_ms": round((time.monotonic_ns() - started) / 1_000_000, 3),
+                "raw_payload": None,
+                "parsed": None,
+                "decode_error": None,
+                "parse_error": None,
+                "parse_error_kind": None,
+                "parsed_available": False,
+                "response_received": False,
+                "http_ok": False,
+                "response_too_large": False,
                 "error": f"{type(exc).__name__}: {exc}",
                 "ok": False,
             }
@@ -238,9 +349,19 @@ class DragonClient:
                 try:
                     response = self._opener(self._request(url), timeout=self.sse_connect_timeout)
                 except HTTPError as exc:
-                    body = exc.read(self.max_response_bytes + 1)[: self.max_response_bytes]
+                    body = exc.read(self.max_response_bytes + 1)
+                    too_large = len(body) > self.max_response_bytes
+                    if too_large:
+                        body = body[: self.max_response_bytes]
                     raw, decode_error = _decode(body)
-                    parsed, parse_error = _parse_json(raw)
+                    if too_large:
+                        parsed = None
+                        parse_error = None
+                        parse_error_kind = None
+                    else:
+                        parsed, parse_error, parse_error_kind = _parse_decoded_json(
+                            raw, decode_error
+                        )
                     details = {
                         **record_context,
                         "request_id": request_id,
@@ -252,6 +373,13 @@ class DragonClient:
                         "decode_error": decode_error,
                         "parsed": parsed,
                         "parse_error": parse_error,
+                        "parse_error_kind": parse_error_kind,
+                        "parsed_available": not too_large
+                        and decode_error is None
+                        and parse_error_kind is None,
+                        "response_received": True,
+                        "http_ok": False,
+                        "response_too_large": too_large,
                         "error": f"HTTP {exc.code}",
                     }
                     self.recorder.append("sse_unavailable", **details)
@@ -349,24 +477,32 @@ class DragonClient:
         data_lines: list[str] = []
         event_name = "message"
         event_id: str | None = None
+        decode_error: str | None = None
         size = 0
         while not stop.is_set():
             line_bytes = response.readline(self.max_event_bytes + 1)
             if not line_bytes:
                 if raw_lines:
-                    yield self._event(raw_lines, data_lines, event_name, event_id)
+                    yield self._event(
+                        raw_lines, data_lines, event_name, event_id, decode_error
+                    )
                 return
             size += len(line_bytes)
             if size > self.max_event_bytes:
                 raise ResponseTooLargeError(f"SSE event exceeded {self.max_event_bytes} bytes")
-            line, _ = _decode(line_bytes.rstrip(b"\r\n"))
+            line, line_decode_error = _decode(line_bytes.rstrip(b"\r\n"))
+            if decode_error is None and line_decode_error is not None:
+                decode_error = line_decode_error
             if line == "":
                 if raw_lines:
-                    yield self._event(raw_lines, data_lines, event_name, event_id)
+                    yield self._event(
+                        raw_lines, data_lines, event_name, event_id, decode_error
+                    )
                 raw_lines = []
                 data_lines = []
                 event_name = "message"
                 event_id = None
+                decode_error = None
                 size = 0
                 continue
             raw_lines.append(line)
@@ -384,23 +520,32 @@ class DragonClient:
 
     @staticmethod
     def _event(
-        raw_lines: list[str], data_lines: list[str], event_name: str, event_id: str | None
+        raw_lines: list[str],
+        data_lines: list[str],
+        event_name: str,
+        event_id: str | None,
+        decode_error: str | None,
     ) -> dict[str, Any]:
         data = "\n".join(data_lines)
         parsed: Any = None
         parse_error: str | None = None
+        parse_error_kind: str | None = None
         if data:
-            try:
-                parsed = json.loads(data)
-            except json.JSONDecodeError as exc:
-                parse_error = str(exc)
+            parsed, parse_error, parse_error_kind = _parse_decoded_json(
+                data, decode_error
+            )
         return {
             "event": event_name,
             "event_id": event_id,
             "raw_payload": "\n".join(raw_lines) + "\n\n",
             "data": data,
             "parsed": parsed,
+            "decode_error": decode_error,
             "parse_error": parse_error,
+            "parse_error_kind": parse_error_kind,
+            "parsed_available": decode_error is None
+            and parse_error_kind is None
+            and bool(data),
             "dispatch": bool(data_lines),
             "comment_only": bool(raw_lines) and all(line.startswith(":") for line in raw_lines),
         }

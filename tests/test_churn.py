@@ -138,6 +138,31 @@ class ChurnRunnerTests(TestCase):
         self.assertIn("churn_run_completed", kinds)
         self.assert_clean(runner)
 
+    def test_churn_withholds_unsafe_parsed_unicode_and_keeps_export_safe(self) -> None:
+        raw = b'{"nested":["ok","\\udc00"]}'
+        with DeviceFixture({
+            "/api/v2/health": raw,
+            "event_data": raw.decode(),
+        }) as fixture:
+            runner = ChurnRunner(parse_target(fixture.target), short_config())
+            runner.start()
+            wait_until(lambda: runner.snapshot()["state"] == "completed")
+            snapshot = runner.snapshot()
+
+        self.assertEqual(snapshot["latest_health"]["raw_payload"], raw.decode())
+        self.assertIsNone(snapshot["latest_health"]["parsed"])
+        self.assertEqual(snapshot["latest_health"]["observed"], {})
+        self.assertGreater(snapshot["parse_failures"], 0)
+        event = next(
+            record
+            for record in runner.recorder.snapshot()
+            if record["kind"] == "sse_event"
+        )
+        self.assertIsNone(event["parsed"])
+        self.assertEqual(event["parse_error_kind"], "unsafe_text")
+        runner.recorder.export_jsonl().encode("utf-8")
+        self.assert_clean(runner)
+
     def test_multiple_cycles_remain_sequential_and_release_every_permit(self) -> None:
         with DeviceFixture({"quiet_seconds": 0.8}) as fixture:
             runner = ChurnRunner(parse_target(fixture.target), short_config(cycles=3))

@@ -204,6 +204,25 @@ class CaptureRunnerTests(TestCase):
         self.assertFalse(any(record["kind"].startswith("sse_") for record in records))
         self.assert_clean(runner)
 
+    def test_capture_withholds_unsafe_parsed_unicode_and_keeps_export_safe(self) -> None:
+        raw = b'{"nested":["ok","\\ud800"]}'
+        with DeviceFixture({
+            "/api/v2/info": raw,
+            "/api/v2/state": raw,
+            "/api/v2/health": raw,
+        }) as fixture:
+            runner = CaptureRunner(parse_target(fixture.target), short_config())
+            runner.start()
+            wait_until(lambda: runner.snapshot()["state"] == "completed")
+            snapshot = runner.snapshot()
+
+        for name in ("latest_info", "latest_state", "latest_health"):
+            self.assertEqual(snapshot[name]["raw_payload"], raw.decode())
+            self.assertIsNone(snapshot[name]["parsed"])
+            self.assertEqual(snapshot[name]["parse_error_kind"], "unsafe_text")
+        runner.recorder.export_jsonl().encode("utf-8")
+        self.assert_clean(runner)
+
     def test_boot_change_is_evidence_without_an_invented_cause(self) -> None:
         health_sequence = [b'{"boot_id":"boot-a"}', b'{"boot_id":"boot-b"}']
         with DeviceFixture({"health_sequence": health_sequence}) as fixture:

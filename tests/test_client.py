@@ -1,10 +1,11 @@
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from http.client import IncompleteRead
+import json
 from threading import Event, Thread
 import time
 from unittest import TestCase
 
-from dragonsniff.client import ConnectionBudget, DragonClient
+from dragonsniff.client import MAX_PARSED_JSON_DEPTH, ConnectionBudget, DragonClient
 from dragonsniff.recording import SessionRecorder
 from dragonsniff.target import parse_target
 
@@ -27,7 +28,9 @@ class FixtureHandler(BaseHTTPRequestHandler):
             if config.get("events_connect_delay"):
                 time.sleep(config["events_connect_delay"])
             if config.get("events_status", 200) != 200:
-                body = b'{"error":"busy","future_detail":true}'
+                body = config.get(
+                    "events_error_body", b'{"error":"busy","future_detail":true}'
+                )
                 self.send_response(config["events_status"])
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
@@ -42,10 +45,16 @@ class FixtureHandler(BaseHTTPRequestHandler):
                 return
             try:
                 self.wfile.write(b": connected\n\n")
-                for index in range(config.get("event_count", 1)):
-                    self.wfile.write(
-                        f'event: telemetry\nid: {index}\ndata: {{"known":1,"unknown":2}}\n\n'.encode()
-                    )
+                event_blocks = config.get("event_blocks")
+                if event_blocks is not None:
+                    for block in event_blocks:
+                        self.wfile.write(block)
+                else:
+                    event_data = config.get("event_data", '{"known":1,"unknown":2}')
+                    for index in range(config.get("event_count", 1)):
+                        self.wfile.write(
+                            f"event: telemetry\nid: {index}\ndata: {event_data}\n\n".encode()
+                        )
                 self.wfile.flush()
             except OSError:
                 pass
@@ -144,6 +153,67 @@ class ClientTests(TestCase):
         self.assertIsNone(result["parsed"]["optional"])
         self.assertEqual(client.budget.active, 0)
 
+    def test_decoded_json_requires_recursively_utf8_encodable_text(self) -> None:
+        cases = {
+            "/api/v2/info": b'{"value":"\\ud800"}',
+            "/api/v2/state": b'{"value":"\\udc00"}',
+            "/api/v2/health": b'{"outer":{"items":["ok","\\ud800"]}}',
+        }
+        with DeviceFixture(dict(cases)) as fixture:
+            recorder = SessionRecorder()
+            client = DragonClient(parse_target(fixture.target), recorder)
+            results = {path: client.fetch_json(path) for path in tuple(cases)}
+
+        for path, raw in cases.items():
+            with self.subTest(path=path):
+                result = results[path]
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["raw_payload"], raw.decode())
+                self.assertIsNone(result["parsed"])
+                self.assertEqual(result["parse_error_kind"], "unsafe_text")
+        self.assertIn(
+            "$/{object-value:0}/{object-value:0}/[1]",
+            results["/api/v2/health"]["parse_error"],
+        )
+        recorder.export_jsonl().encode("utf-8")
+
+    def test_decoded_json_rejects_unsafe_object_key_without_echoing_it(self) -> None:
+        raw = b'{"\\ud800":"unsafe"}'
+        with DeviceFixture({"/api/v2/info": raw}) as fixture:
+            recorder = SessionRecorder()
+            result = DragonClient(parse_target(fixture.target), recorder).fetch_json(
+                "/api/v2/info"
+            )
+
+        self.assertEqual(result["raw_payload"], raw.decode())
+        self.assertIsNone(result["parsed"])
+        self.assertEqual(
+            result["parse_error"],
+            "parsed JSON contains non-UTF-8-encodable text at $/{object-key:0}",
+        )
+        self.assertEqual(result["parse_error_kind"], "unsafe_text")
+        jsonl = recorder.export_jsonl()
+        jsonl.encode("utf-8")
+        self.assertIn('"raw_payload":"{\\"\\\\ud800\\":\\"unsafe\\"}"', jsonl)
+
+    def test_valid_unicode_is_admitted_and_preserved_exactly(self) -> None:
+        raw = (
+            '{"emoji":"\\ud83d\\ude80","text":"日本語 café e\\u0301"}'
+        ).encode()
+        with DeviceFixture({"/api/v2/info": raw}) as fixture:
+            recorder = SessionRecorder()
+            result = DragonClient(parse_target(fixture.target), recorder).fetch_json(
+                "/api/v2/info"
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertIsNone(result["parse_error_kind"])
+        self.assertEqual(result["raw_payload"], raw.decode())
+        self.assertEqual(result["parsed"], {"emoji": "🚀", "text": "日本語 café é"})
+        exported = recorder.export_jsonl().encode("utf-8")
+        self.assertIn("🚀".encode(), exported)
+        self.assertIn("日本語 café é".encode(), exported)
+
     def test_malformed_and_oversized_responses_are_recorded_as_failures(self) -> None:
         with DeviceFixture({"/api/v2/state": b"not-json"}) as fixture:
             recorder = SessionRecorder()
@@ -153,9 +223,13 @@ class ClientTests(TestCase):
             oversized = client.fetch_json("/api/v2/health")
 
         self.assertFalse(malformed["ok"])
-        self.assertIsNotNone(malformed["parse_error"])
+        self.assertEqual(malformed["parse_error_kind"], "syntax")
         self.assertFalse(oversized["ok"])
         self.assertIn("ResponseTooLargeError", oversized["error"])
+        self.assertTrue(oversized["response_received"])
+        self.assertTrue(oversized["http_ok"])
+        self.assertTrue(oversized["response_too_large"])
+        self.assertFalse(oversized["parsed_available"])
         self.assertEqual(client.budget.active, 0)
 
     def test_malformed_http_status_line_is_recorded_as_transport_failure(self) -> None:
@@ -166,6 +240,8 @@ class ClientTests(TestCase):
 
         self.assertFalse(result["ok"])
         self.assertIsNone(result["status"])
+        self.assertFalse(result["response_received"])
+        self.assertFalse(result["http_ok"])
         self.assertIn("BadStatusLine", result["error"])
         error = next(
             record for record in recorder.snapshot() if record["kind"] == "http_error"
@@ -203,9 +279,147 @@ class ClientTests(TestCase):
         self.assertEqual(valid["raw_payload"], raw.decode())
         self.assertEqual(valid["parsed"], {"error": "missing", "future_detail": {"value": True}})
         self.assertIsNone(valid["parse_error"])
+        self.assertIsNone(valid["parse_error_kind"])
         self.assertEqual(invalid["raw_payload"], "not-json")
         self.assertIsNone(invalid["parsed"])
-        self.assertIsNotNone(invalid["parse_error"])
+        self.assertEqual(invalid["parse_error_kind"], "syntax")
+
+    def test_http_and_sse_error_bodies_apply_unicode_admission_boundary(self) -> None:
+        raw = b'{"error":"\\ud800"}'
+        config = {
+            "/api/v2/info": raw,
+            "json_status": {"/api/v2/info": 503},
+            "events_status": 503,
+            "events_error_body": raw,
+        }
+        with DeviceFixture(config) as fixture:
+            recorder = SessionRecorder()
+            client = DragonClient(parse_target(fixture.target), recorder)
+            http_result = client.fetch_json("/api/v2/info")
+            states: list[tuple[str, dict[str, object]]] = []
+            client.stream_events(
+                Event(), lambda event: None, lambda state, data: states.append((state, data))
+            )
+
+        sse_result = next(data for state, data in states if state == "unavailable")
+        for result in (http_result, sse_result):
+            self.assertEqual(result["raw_payload"], raw.decode())
+            self.assertIsNone(result["parsed"])
+            self.assertEqual(result["parse_error_kind"], "unsafe_text")
+        recorder.export_jsonl().encode("utf-8")
+
+    def test_deep_json_is_iteratively_rejected_before_recursive_local_surfaces(self) -> None:
+        depth = 900
+        raw = ("[" * depth + '"ok"' + "]" * depth).encode()
+        json.loads(raw)
+        self.assertGreater(depth, MAX_PARSED_JSON_DEPTH)
+        with DeviceFixture({"/api/v2/info": raw}) as fixture:
+            recorder = SessionRecorder()
+            result = DragonClient(parse_target(fixture.target), recorder).fetch_json(
+                "/api/v2/info"
+            )
+
+        self.assertTrue(result["response_received"])
+        self.assertTrue(result["http_ok"])
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["parsed_available"])
+        self.assertIsNone(result["parsed"])
+        self.assertEqual(result["parse_error_kind"], "structure_too_deep")
+        self.assertEqual(result["raw_payload"], raw.decode())
+        recorder.export_jsonl().encode("utf-8")
+
+    def test_json_deeper_than_decoder_limit_is_contained(self) -> None:
+        depth = 10_000
+        raw = ("[" * depth + "0" + "]" * depth).encode()
+        with DeviceFixture({"/api/v2/info": raw}) as fixture:
+            recorder = SessionRecorder()
+            result = DragonClient(parse_target(fixture.target), recorder).fetch_json(
+                "/api/v2/info"
+            )
+
+        self.assertTrue(result["response_received"])
+        self.assertTrue(result["http_ok"])
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["parse_error_kind"], "structure_too_deep")
+        self.assertEqual(result["parse_error"], "JSON nesting exceeds the decoder limit")
+        self.assertEqual(result["raw_payload"], raw.decode())
+        recorder.export_jsonl().encode("utf-8")
+
+    def test_result_statuses_separate_reachability_http_and_structured_use(self) -> None:
+        config = {
+            "/api/v2/info": b'{"valid":true}',
+            "/api/v2/state": b'{"unsafe":"\\ud800"}',
+            "/api/v2/health": b'{"rejected":true}',
+            "json_status": {"/api/v2/health": 503},
+        }
+        with DeviceFixture(config) as fixture:
+            client = DragonClient(parse_target(fixture.target), SessionRecorder())
+            valid = client.fetch_json("/api/v2/info")
+            unsafe = client.fetch_json("/api/v2/state")
+            rejected = client.fetch_json("/api/v2/health")
+        failed = DragonClient(
+            parse_target("127.0.0.1:1"), SessionRecorder(), request_timeout=0.1
+        ).fetch_json("/api/v2/info")
+
+        self.assertEqual(
+            (valid["response_received"], valid["http_ok"], valid["ok"]),
+            (True, True, True),
+        )
+        self.assertEqual(
+            (unsafe["response_received"], unsafe["http_ok"], unsafe["ok"]),
+            (True, True, False),
+        )
+        self.assertEqual(unsafe["parse_error_kind"], "unsafe_text")
+        self.assertEqual(
+            (rejected["response_received"], rejected["http_ok"], rejected["ok"]),
+            (True, False, False),
+        )
+        self.assertTrue(rejected["parsed_available"])
+        self.assertEqual(
+            (failed["response_received"], failed["http_ok"], failed["ok"]),
+            (False, False, False),
+        )
+
+    def test_invalid_http_utf8_is_marked_and_not_admitted_as_parsed_data(self) -> None:
+        body = b'{"value":"\xff"}'
+        with DeviceFixture({"/api/v2/info": body}) as fixture:
+            recorder = SessionRecorder()
+            result = DragonClient(parse_target(fixture.target), recorder).fetch_json(
+                "/api/v2/info"
+            )
+
+        self.assertTrue(result["response_received"])
+        self.assertTrue(result["http_ok"])
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["parsed_available"])
+        self.assertIn("0xff", result["decode_error"])
+        self.assertEqual(result["raw_payload"], '{"value":"�"}')
+        self.assertIsNone(result["parsed"])
+        self.assertIsNone(result["parse_error"])
+        self.assertIsNone(result["parse_error_kind"])
+        recorder.export_jsonl().encode("utf-8")
+
+    def test_oversized_http_error_body_has_separate_non_parse_classification(self) -> None:
+        body = b'{"unsafe":"\\ud800"}' + b"x" * 20
+        with DeviceFixture({
+            "/api/v2/info": body,
+            "json_status": {"/api/v2/info": 503},
+        }) as fixture:
+            recorder = SessionRecorder()
+            client = DragonClient(
+                parse_target(fixture.target), recorder, max_response_bytes=20
+            )
+            result = client.fetch_json("/api/v2/info")
+
+        self.assertTrue(result["response_received"])
+        self.assertFalse(result["http_ok"])
+        self.assertTrue(result["response_too_large"])
+        self.assertFalse(result["parsed_available"])
+        self.assertEqual(len(result["raw_payload"].encode()), 20)
+        self.assertIsNone(result["parsed"])
+        self.assertIsNone(result["parse_error"])
+        self.assertIsNone(result["parse_error_kind"])
+        recorder.export_jsonl().encode("utf-8")
 
     def test_sse_lifecycle_parses_events_and_preserves_raw_blocks(self) -> None:
         with DeviceFixture() as fixture:
@@ -220,10 +434,47 @@ class ClientTests(TestCase):
         self.assertEqual(events[0]["event"], "telemetry")
         self.assertEqual(events[0]["event_id"], "0")
         self.assertEqual(events[0]["parsed"], {"known": 1, "unknown": 2})
+        self.assertIsNone(events[0]["decode_error"])
+        self.assertIsNone(events[0]["parse_error_kind"])
         self.assertEqual(events[0]["raw_payload"], 'event: telemetry\nid: 0\ndata: {"known":1,"unknown":2}\n\n')
         comment = next(record for record in recorder.snapshot() if record["kind"] == "sse_comment")
         self.assertEqual(comment["raw_payload"], ": connected\n\n")
         self.assertEqual(client.budget.active, 0)
+
+    def test_sse_parsed_data_uses_the_same_unicode_admission_boundary(self) -> None:
+        raw_data = '{"nested":["ok","\\ud800"]}'
+        with DeviceFixture({"event_data": raw_data}) as fixture:
+            recorder = SessionRecorder()
+            client = DragonClient(parse_target(fixture.target), recorder)
+            events: list[dict[str, object]] = []
+            client.stream_events(Event(), events.append, lambda state, data: None)
+
+        self.assertEqual(len(events), 1)
+        self.assertIsNone(events[0]["parsed"])
+        self.assertEqual(events[0]["parse_error_kind"], "unsafe_text")
+        self.assertIn(f"data: {raw_data}", events[0]["raw_payload"])
+        recorder.export_jsonl().encode("utf-8")
+
+    def test_sse_invalid_utf8_retains_first_decode_error_and_safe_text(self) -> None:
+        blocks = [
+            b'event: telemetry\ndata: {"first":"\xff"}\ndata: {"second":"\xfe"}\n\n'
+        ]
+        with DeviceFixture({"event_blocks": blocks}) as fixture:
+            recorder = SessionRecorder()
+            client = DragonClient(parse_target(fixture.target), recorder)
+            events: list[dict[str, object]] = []
+            client.stream_events(Event(), events.append, lambda state, data: None)
+
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertIn("0xff", event["decode_error"])
+        self.assertNotIn("0xfe", event["decode_error"])
+        self.assertIn('data: {"first":"�"}', event["raw_payload"])
+        self.assertIn('data: {"second":"�"}', event["raw_payload"])
+        self.assertFalse(event["parsed_available"])
+        self.assertIsNone(event["parsed"])
+        self.assertIsNone(event["parse_error_kind"])
+        recorder.export_jsonl().encode("utf-8")
 
     def test_quiet_sse_stream_has_no_application_inactivity_timeout(self) -> None:
         with DeviceFixture({"quiet_seconds": 0.5}) as fixture:

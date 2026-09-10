@@ -149,6 +149,14 @@ test("parsed copy uses stable formatted JSON and preserves unknown fields", () =
   );
 });
 
+test("parsed copy preserves supplementary multilingual and combining Unicode", () => {
+  const result = {parsed: {emoji: "🚀", text: "日本語 café é"}, parse_error: null};
+  assert.equal(
+    payloadText(result, "parsed"),
+    '{\n  "emoji": "🚀",\n  "text": "日本語 café é"\n}',
+  );
+});
+
 test("parsed JSON null remains a valid copyable payload", () => {
   assert.equal(payloadText({parsed: null, parse_error: null}, "parsed"), "null");
 });
@@ -168,6 +176,32 @@ test("parsed HTTP error objects remain copyable instead of becoming null", () =>
 
 test("invalid JSON error bodies do not enable parsed copy", () => {
   assert.equal(payloadText({parsed: null, parse_error: "invalid JSON"}, "parsed"), null);
+});
+
+test("unsafe parsed device Unicode stays unavailable while exact raw evidence remains copyable", () => {
+  const raw = '{"nested":["ok","\\ud800"]}';
+  const result = {
+    raw_payload: raw,
+    parsed: null,
+    parse_error: "parsed JSON contains non-UTF-8-encodable text",
+    parse_error_kind: "unsafe_text",
+    parsed_available: false,
+  };
+  assert.equal(payloadText(result, "parsed"), null);
+  assert.equal(payloadText(result, "raw"), raw);
+});
+
+test("decode failures never expose replacement-decoded text as parsed JSON", () => {
+  const result = {
+    raw_payload: '{"value":"�"}',
+    parsed: null,
+    parsed_available: false,
+    decode_error: "invalid UTF-8",
+    parse_error: null,
+    parse_error_kind: null,
+  };
+  assert.equal(payloadText(result, "parsed"), null);
+  assert.equal(payloadText(result, "raw"), result.raw_payload);
 });
 
 test("malformed or absent representations are not copyable", () => {

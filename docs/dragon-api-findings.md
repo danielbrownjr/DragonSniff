@@ -59,6 +59,43 @@ The inspected feature branch contained additional SSE lifecycle diagnostics, but
 
 DragonBreath JSON error responses include product policy state in addition to an error code and message. An unavailable Jump Jet route follows its HTTP server's normal not-found behavior. Network failure, HTTP rejection, malformed JSON, missing routes, and clean SSE end-of-stream are distinct observations in DragonSniff's session.
 
+Successfully UTF-8-decoded DUT text is retained exactly. Python's strict UTF-8
+decoder cannot produce lone surrogates; the issue addressed here enters through
+syntactically valid JSON escape sequences such as `\uD800` and `\uDC00`. After
+JSON decoding, DragonSniff uses an explicit stack to validate every string,
+including object keys and nested values, before admitting the parsed object to
+structured state. The admission depth is capped at 128 so later bounded local
+recording and serialization code never receives a recursively hazardous object.
+Nesting beyond Python's JSON decoder limit is classified the same way rather than
+allowing the decoder's `RecursionError` to escape the boundary.
+
+`parse_error_kind` is `syntax`, `unsafe_text`, or `structure_too_deep` when
+`parsed_available` is false for one of those reasons; it is `null` when parsing
+and structured admission succeed. `parse_error` remains the human-readable
+diagnostic. Structural positions use device-text-free components such as
+`$/{object-value:0}/[1]`. DragonSniff does not normalize, replace, or invent a
+corrected representation for malformed parsed Unicode.
+
+If transport bytes are not valid UTF-8, `decode_error` records the failure,
+`parsed_available` is false, and `raw_payload` is a safe replacement-decoded
+view rather than byte-exact evidence. SSE evidence retains the first decode
+failure in an event, bounding diagnostics even when multiple lines are invalid.
+The replacement-decoded text is never admitted as parsed structured data.
+
+For HTTP observations, `response_received` means an HTTP response was obtained,
+`http_ok` means its status was 2xx, and `ok` means a 2xx response was also
+available as structured data. Thus a reachable 200 response with unsafe text is
+not usable (`ok: false`) but remains distinguishable from transport failure.
+`response_too_large` separately marks a size failure. A truncated oversized
+error body is retained only as a truncated textual view and is not parsed, so
+its parse classification remains `null` rather than claiming a diagnosis from
+non-authoritative content.
+
+The live observer labels endpoint reachability from `http_ok`, while capture
+success counters and churn-derived observations use `ok` because those consumers
+require structured data. This prevents unsafe parsed text from making a reachable
+200 endpoint look offline without admitting it to structured consumers.
+
 DragonSniff does not silently substitute polling for SSE. It fetches `/state` during the initial JSON pass and permits explicit refreshes, while leaving the stream's unavailable or closed state visible. The bounded churn runner handles automated stream exercises separately.
 
 ## Architecture consequence
@@ -69,6 +106,12 @@ The backend has fixed read-only device routes, two device-connection permits, bo
 
 SSE connection establishment is bounded to five seconds. Once established, a stream has no DragonSniff application-level inactivity timeout: SSE permits valid quiet streams, and DragonBreath's current two-second telemetry cadence is not assumed to be a family-wide contract. Explicit Stop or Reconnect closes the socket; transport failures remain recorded as errors unless the stream-specific stop condition is set. DragonSniff does not automatically reconnect.
 
-The churn runner reuses these same fixed routes, recorder, parser, timeout semantics, and two-permit client budget. It opens at most one churn-owned SSE connection at a time. The second permit allows a bounded health sample while that stream is open; it is not a claim about device-side stream capacity.
+The churn runner reuses these same fixed routes, recorder, parser, structured
+admission rule, timeout semantics, and two-permit client budget. SSE event data
+and JSON rejection bodies use the same admission rule. It opens at most one
+churn-owned SSE connection at a time. The second permit allows a bounded health
+sample while that stream is open; it is not a claim about device-side stream
+capacity. Invalid SSE bytes carry their first `decode_error`; their replacement-
+decoded textual view is not described as exact raw evidence.
 
 Churn records HTTP 503 stream rejection without assuming every 503 has the same product cause. DragonBreath's current valid JSON `busy` response is preserved as one real-world example. Other HTTP statuses, invalid bodies, transport failures, remote EOF, deliberate disconnect, cancellation, and controller failures remain distinguishable evidence.
