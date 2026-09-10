@@ -85,66 +85,9 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' &&
       inputs.promotion_target != 'none'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    steps:
-      - name: Check out release tag
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Validate promotion request
-        env:
-          PROMOTION_TARGET: ${{ inputs.promotion_target }}
-          RELEASE_VERSION: ${{ inputs.release_version }}
-          RELEASE_SHA: ${{ inputs.release_sha }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]
-          test "$GITHUB_REF" = "refs/tags/$RELEASE_VERSION"
-          test "$(git rev-parse "$GITHUB_REF^{commit}")" = "$RELEASE_SHA"
-          package_version="$(PYTHONPATH=src python -c 'from dragonsniff._version import __version__; print(__version__)')"
-          python scripts/validate_release_promotion.py \
-            "$RELEASE_VERSION" "$package_version" "$PROMOTION_TARGET"
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Promote immutable image to version tag
-        if: inputs.promotion_target == 'version'
-        env:
-          RELEASE_VERSION: ${{ inputs.release_version }}
-          RELEASE_SHA: ${{ inputs.release_sha }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          source_ref="$IMAGE_NAME:sha-$RELEASE_SHA"
-          source_digest="$(docker buildx imagetools inspect "$source_ref" --format '{{json .Manifest.Digest}}' | tr -d '"')"
-          docker buildx imagetools create --tag "$IMAGE_NAME:$RELEASE_VERSION" "$source_ref@$source_digest"
-          version_digest="$(docker buildx imagetools inspect "$IMAGE_NAME:$RELEASE_VERSION" --format '{{json .Manifest.Digest}}' | tr -d '"')"
-          test "$version_digest" = "$source_digest"
-
-      - name: Promote verified version to latest
-        if: inputs.promotion_target == 'latest'
-        env:
-          RELEASE_VERSION: ${{ inputs.release_version }}
-          RELEASE_SHA: ${{ inputs.release_sha }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          source_ref="$IMAGE_NAME:sha-$RELEASE_SHA"
-          source_digest="$(docker buildx imagetools inspect "$source_ref" --format '{{json .Manifest.Digest}}' | tr -d '"')"
-          version_digest="$(docker buildx imagetools inspect "$IMAGE_NAME:$RELEASE_VERSION" --format '{{json .Manifest.Digest}}' | tr -d '"')"
-          test "$version_digest" = "$source_digest"
-          docker buildx imagetools create --tag "$IMAGE_NAME:latest" "$source_ref@$source_digest"
-          latest_digest="$(docker buildx imagetools inspect "$IMAGE_NAME:latest" --format '{{json .Manifest.Digest}}' | tr -d '"')"
-          test "$latest_digest" = "$source_digest"
+    uses: ./.github/workflows/promote-container.yml
+    with:
+      promotion_target: ${{ inputs.promotion_target }}
+      release_version: ${{ inputs.release_version }}
+      release_sha: ${{ inputs.release_sha }}
+    secrets: inherit
