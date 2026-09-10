@@ -4,6 +4,8 @@ DragonSniff can add read-only PrusaLink status observations to the same recorder
 
 This feature is evidence acquisition only. It cannot change a bed or nozzle target, start or stop a print, pause or resume a printer, select a Jump Jet mode, command a heater or fan, or reconstruct Jump Jet Automatic policy.
 
+Dragon-family firmware and DragonSniff use PrusaLink for different purposes. Firmware uses dragon-core's `dc_prusa` component as its reusable read-only printer client, and products such as JumpJet apply their own product-local policy and behavior to that data. DragonSniff's direct poll does not replace `dc_prusa`: it independently observes the same external printer source only as auxiliary validation evidence. That independence lets validation correlate what the printer reported with what the Dragon-family DUT reported or did, without relying solely on the DUT's interpretation or reconstructing product policy in DragonSniff. DragonSniff remains a Dragon-family validation and observability tool, not a generic printer-management tool.
+
 ## Configuration
 
 Set a PrusaLink origin and API key before starting DragonSniff:
