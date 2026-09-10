@@ -6,10 +6,12 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from http.client import HTTPException
+import logging
 import math
 import re
 from threading import Event, Lock, Thread
 import time
+import traceback
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -36,9 +38,11 @@ CAPTURE_BOUNDARY_REQUEST_SECONDS = 20.0
 LIVE_HISTORY_HORIZON_SECONDS = 60 * 60
 LIVE_BOUNDARY_RECORDS = 2
 MAX_LIVE_RESERVED_RECORDS = LIVE_HISTORY_HORIZON_SECONDS + LIVE_BOUNDARY_RECORDS
+MAX_CAPTURE_RESERVED_RECORDS = MAX_LIVE_RESERVED_RECORDS
 MAX_SOURCE_ID_CHARACTERS = 2_048
 MAX_PRINTER_STATE_CHARACTERS = 128
 API_KEY_PATTERN = re.compile(r"[!-~]{1,256}\Z")
+LOGGER = logging.getLogger(__name__)
 
 
 class PrusaLinkConfigError(ValueError):
@@ -119,16 +123,17 @@ class PrusaLinkConfig:
     def estimated_capture_records(
         self,
         duration_seconds: float,
-        boundary_request_seconds: float = CAPTURE_BOUNDARY_REQUEST_SECONDS,
     ) -> int:
+        """Bound source headroom while preserving the complete Dragon schedule."""
         if not self.enabled:
             return 0
-        return (
+        return min(
+            MAX_CAPTURE_RESERVED_RECORDS,
             math.ceil(
-                (duration_seconds + boundary_request_seconds)
+                (duration_seconds + CAPTURE_BOUNDARY_REQUEST_SECONDS)
                 / self.poll_interval_seconds
             )
-            + 2
+            + LIVE_BOUNDARY_RECORDS,
         )
 
     def live_observation_reserved_records(self) -> int:
@@ -143,17 +148,20 @@ class PrusaLinkConfig:
             + LIVE_BOUNDARY_RECORDS,
         )
 
-    def public_snapshot(self, *, state: str | None = None) -> dict[str, Any]:
+    def public_snapshot(
+        self, *, source_state: str | None = None
+    ) -> dict[str, Any]:
         if not self.enabled:
             return {
                 "configured": False,
-                "state": "disabled",
+                "source_state": "disabled",
                 "source": "prusalink",
                 "source_id": None,
+                "polling": False,
             }
         return {
             "configured": True,
-            "state": state or "configured",
+            "source_state": source_state or "configured",
             "source": "prusalink",
             "source_id": self.source_id,
             "endpoint": PRUSALINK_STATUS_PATH,
@@ -164,6 +172,7 @@ class PrusaLinkConfig:
             "freshness": {"state": "unavailable", "sample_age_ms": None},
             "data": None,
             "last_error": None,
+            "polling": False,
         }
 
 
@@ -268,7 +277,7 @@ class PrusaLinkSource:
             self._stop.clear()
             self._context = dict(context or {})
             self._running = True
-            self._state["state"] = "connecting"
+            self._state["source_state"] = "connecting"
             thread = Thread(
                 target=self._run,
                 name="dragonsniff-prusalink",
@@ -298,8 +307,14 @@ class PrusaLinkSource:
         failures = 0
         try:
             while not self._stop.is_set():
-                result = self.poll_once(context=self._context)
-                failures = 0 if result["status"] == "healthy" else failures + 1
+                try:
+                    result = self.poll_once(context=self._context)
+                except Exception as exc:
+                    self._record_internal_error(exc)
+                    return
+                failures = (
+                    0 if result["source_state"] == "healthy" else failures + 1
+                )
                 if self._stop.wait(self.retry_delay_seconds(failures)):
                     break
         finally:
@@ -355,7 +370,7 @@ class PrusaLinkSource:
                 else:
                     if (
                         self.config.api_key is not None
-                        and self.config.api_key in data["printer_state"]
+                        and self.config.api_key == data["printer_state"]
                     ):
                         fields = self._parse_failure_fields(
                             response_status,
@@ -365,7 +380,7 @@ class PrusaLinkSource:
                         )
                     else:
                         fields = {
-                            "status": "healthy",
+                            "source_state": "healthy",
                             "connected": True,
                             "authenticated": True,
                             "response_status": response_status,
@@ -399,7 +414,7 @@ class PrusaLinkSource:
             last_good_ns = self._last_good_monotonic_ns
         freshness = self._freshness_for(
             completed_ns,
-            completed_ns if fields["status"] == "healthy" else last_good_ns,
+            completed_ns if fields["source_state"] == "healthy" else last_good_ns,
         )
         record = self.recorder.append(
             "source_observation",
@@ -415,7 +430,7 @@ class PrusaLinkSource:
             **fields,
         )
         with self._lock:
-            if fields["status"] == "healthy":
+            if fields["source_state"] == "healthy":
                 self._last_good_monotonic_ns = completed_ns
                 self._state["data"] = deepcopy(fields["data"])
                 self._state["last_success_timestamp"] = record["timestamp"]
@@ -428,7 +443,7 @@ class PrusaLinkSource:
                 }
             self._state.update(
                 {
-                    "state": fields["status"],
+                    "source_state": fields["source_state"],
                     "connected": fields["connected"],
                     "authenticated": fields["authenticated"],
                     "freshness": freshness,
@@ -441,8 +456,9 @@ class PrusaLinkSource:
         self, status_code: int, decode_error: str | None
     ) -> dict[str, Any]:
         auth_error = status_code in {401, 403}
+        decode_error = self._redact(decode_error)
         return {
-            "status": "auth_error" if auth_error else "transport_error",
+            "source_state": "auth_error" if auth_error else "transport_error",
             "connected": True,
             "authenticated": False if auth_error else None,
             "response_status": status_code,
@@ -462,16 +478,18 @@ class PrusaLinkSource:
             },
         }
 
-    @staticmethod
     def _parse_failure_fields(
+        self,
         status_code: int,
         decode_error: str | None,
         parse_error: str | None,
         parse_error_kind: str,
     ) -> dict[str, Any]:
+        decode_error = self._redact(decode_error)
+        parse_error = self._redact(parse_error)
         message = decode_error or parse_error or "PrusaLink response was not usable JSON"
         return {
-            "status": "parse_error",
+            "source_state": "parse_error",
             "connected": True,
             "authenticated": True,
             "response_status": status_code,
@@ -484,14 +502,19 @@ class PrusaLinkSource:
             "error": {"kind": parse_error_kind, "message": message[:512]},
         }
 
-    def _error_fields(
-        self, status: str, kind: str, exc: BaseException
-    ) -> dict[str, Any]:
-        message = f"{type(exc).__name__}: {exc}"
+    def _redact(self, message: str | None) -> str | None:
+        if message is None:
+            return None
         if self.config.api_key:
-            message = message.replace(self.config.api_key, "<redacted>")
+            return message.replace(self.config.api_key, "<redacted>")
+        return message
+
+    def _error_fields(
+        self, source_state: str, kind: str, exc: BaseException
+    ) -> dict[str, Any]:
+        message = self._redact(f"{type(exc).__name__}: {exc}")
         return {
-            "status": status,
+            "source_state": source_state,
             "connected": False,
             "authenticated": None,
             "response_status": None,
@@ -501,8 +524,54 @@ class PrusaLinkSource:
             "omitted_optional_fields": [],
             "data": None,
             "response_too_large": kind == "response_too_large",
-            "error": {"kind": kind, "message": message[:512]},
+            "error": {"kind": kind, "message": (message or "")[:512]},
         }
+
+    def _record_internal_error(self, exc: Exception) -> None:
+        fields = self._error_fields("internal_error", "internal", exc)
+        observed_at = self._timestamp()
+        observed_ns = self._monotonic_ns()
+        record: dict[str, Any] | None = None
+        try:
+            record = self.recorder.append(
+                "source_observation",
+                **self._context,
+                source="prusalink",
+                source_id=self.config.source_id,
+                endpoint=PRUSALINK_STATUS_PATH,
+                method="GET",
+                observed_at=observed_at,
+                observed_monotonic_ns=observed_ns,
+                elapsed_ms=0.0,
+                freshness=self._freshness_for(
+                    observed_ns, self._last_good_monotonic_ns
+                ),
+                **fields,
+            )
+        except Exception:
+            # A recorder failure must not prevent the in-memory source state
+            # from truthfully reporting that the polling worker stopped.
+            pass
+        timestamp = record["timestamp"] if record is not None else observed_at
+        with self._lock:
+            self._state.update(
+                {
+                    "source_state": "internal_error",
+                    "connected": False,
+                    "authenticated": None,
+                    "last_observation_timestamp": timestamp,
+                    "last_error": {
+                        "kind": "internal",
+                        "message": fields["error"]["message"],
+                        "timestamp": timestamp,
+                    },
+                }
+            )
+        rendered = "".join(traceback.TracebackException.from_exception(exc).format())
+        LOGGER.error(
+            "PrusaLink polling stopped after an internal error:\n%s",
+            self._redact(rendered),
+        )
 
     def _response_too_large_fields(
         self, response_status: int | None, exc: ResponseTooLargeError
@@ -539,6 +608,9 @@ class PrusaLinkSource:
             result["polling"] = self._running
             last_good_ns = self._last_good_monotonic_ns
         result["freshness"] = self._freshness_for(now_ns, last_good_ns)
-        if result["state"] == "healthy" and result["freshness"]["state"] == "stale":
-            result["state"] = "stale"
+        if (
+            result["source_state"] == "healthy"
+            and result["freshness"]["state"] == "stale"
+        ):
+            result["source_state"] = "stale"
         return result

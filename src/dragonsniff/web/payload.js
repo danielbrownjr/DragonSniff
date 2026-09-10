@@ -246,6 +246,7 @@
       return {
         configured: false,
         status: "Disabled",
+        polling: "Disabled",
         connection: "Not configured",
         printer: "—",
         bed: "—",
@@ -272,6 +273,7 @@
       auth_error: "Authentication error",
       transport_error: "Transport error",
       parse_error: "Parse error",
+      internal_error: "Internal error · polling stopped",
       paused: "Paused during Churn",
     };
     const connection = source.connected
@@ -283,7 +285,8 @@
         : "Last request disconnected";
     return {
       configured: true,
-      status: labels[source.state] || "Configured",
+      status: labels[source.source_state] || "Configured",
+      polling: source.polling === true ? "Active" : "Stopped",
       connection,
       printer: typeof data.printer_state === "string" ? data.printer_state : "—",
       bed,

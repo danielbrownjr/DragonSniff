@@ -75,9 +75,11 @@ The resulting JSONL supports later analysis of temperatures, targets, requested 
 - Maximum 25,000 estimated Dragon scheduled records; each normal capture recorder also
   reserves space for up to 1,000 operator annotations so markers do not displace
   nominal telemetry evidence. An enabled PrusaLink source receives a separate
-  worst-case polling reserve. Memory-only and persistent paths calculate the same
-  combined capacity, so source evidence cannot evict the scheduled Dragon records
-  or annotation headroom.
+  bounded polling allowance of at most 3,602 records. Memory-only and persistent
+  paths calculate the same combined capacity. The Dragon schedule and annotation
+  headroom are included in that capacity, but all kinds still share normal FIFO
+  eviction if actual source attempts exceed the capped estimate during a dense,
+  long capture. Persistent JSONL remains append-only.
 - Stop prevents future samples and retains everything already observed
 
 An in-flight read remains bounded by the existing client request timeout. While it finishes, the run truthfully remains `stopping`; a replacement observation, churn run, or capture cannot start.

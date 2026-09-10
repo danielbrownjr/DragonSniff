@@ -179,10 +179,7 @@ class CaptureRunner:
             or PrusaLinkConfig()
         )
         source_records = source_config.estimated_capture_records(
-            config.duration_seconds,
-            boundary_request_seconds=(
-                4.0 * float(getattr(client, "request_timeout", 5.0))
-            ),
+            config.duration_seconds
         )
         required_records = config.estimated_records() + source_records
         self.recorder = (

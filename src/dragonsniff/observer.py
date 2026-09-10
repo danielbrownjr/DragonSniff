@@ -45,8 +45,8 @@ class Observer:
         )
         if source_config.enabled and self.recorder.max_records < required_records:
             raise ValueError(
-                "PrusaLink live recorder is smaller than the Dragon baseline "
-                "plus source reserve"
+                "PrusaLink live recorder is smaller than the requested base "
+                "capacity plus source allowance"
             )
         self.client = client or DragonClient(
             target, self.recorder, connection_limit=connection_limit

@@ -76,8 +76,8 @@ def _environment_hosts() -> list[str]:
 
 
 def _prusalink_api_key() -> str | None:
-    direct = os.environ.get("DRAGONSNIFF_PRUSALINK_API_KEY")
-    secret_path = os.environ.get("DRAGONSNIFF_PRUSALINK_API_KEY_FILE")
+    direct = os.environ.get("DRAGONSNIFF_PRUSALINK_API_KEY") or None
+    secret_path = os.environ.get("DRAGONSNIFF_PRUSALINK_API_KEY_FILE") or None
     if direct is not None and secret_path:
         raise SystemExit(
             "configure only one of DRAGONSNIFF_PRUSALINK_API_KEY or "
@@ -89,10 +89,11 @@ def _prusalink_api_key() -> str | None:
         encoded = Path(secret_path).read_bytes()
     except OSError as exc:
         raise SystemExit("could not read PrusaLink API key file") from exc
-    if len(encoded) > 258:
+    # Up to 256 key bytes, an optional UTF-8 BOM, and a trailing CRLF.
+    if len(encoded) > 261:
         raise SystemExit("PrusaLink API key file is too large")
     try:
-        return encoded.decode("utf-8").rstrip("\r\n")
+        return encoded.decode("utf-8-sig").rstrip("\r\n")
     except UnicodeDecodeError as exc:
         raise SystemExit("PrusaLink API key file must be UTF-8 text") from exc
 

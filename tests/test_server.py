@@ -237,7 +237,7 @@ class ServerTests(TestCase):
         serialized = json.dumps(snapshot)
 
         self.assertTrue(snapshot["prusalink"]["configured"])
-        self.assertEqual(snapshot["prusalink"]["state"], "configured")
+        self.assertEqual(snapshot["prusalink"]["source_state"], "configured")
         self.assertEqual(snapshot["prusalink"]["source_id"], "http://prusa.local")
         self.assertEqual(snapshot["prusalink"]["poll_interval_seconds"], 7)
         self.assertNotIn("do-not-serialize-this", serialized)

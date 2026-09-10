@@ -152,6 +152,46 @@ class CaptureConfigTests(TestCase):
         self.assertEqual(memory_runner.snapshot()["annotation_limit"], 1_000)
         self.assertEqual(persistent_runner.snapshot()["annotation_limit"], 1_000)
 
+    def test_prusalink_capture_reserve_caps_long_haul_without_reducing_dragon_budget(
+        self,
+    ) -> None:
+        smoke = CaptureConfig.profiles()["Smoke"]
+        long_haul = CaptureConfig.profiles()["Long Haul"]
+        prusa = PrusaLinkConfig.from_values("prusa.local", "secret", 1)
+
+        smoke_runner = CaptureRunner(
+            parse_target("dragon.local"), smoke, prusalink_config=prusa
+        )
+        long_runner = CaptureRunner(
+            parse_target("dragon.local"), long_haul, prusalink_config=prusa
+        )
+
+        self.assertEqual(smoke_runner.snapshot()["source_estimated_records"], 142)
+        self.assertEqual(long_runner.snapshot()["source_estimated_records"], 3_602)
+        self.assertEqual(
+            long_runner.recorder.max_records,
+            long_haul.estimated_records() + 3_602 + 1_000,
+        )
+
+    def test_capture_source_estimate_has_one_timeout_independent_policy(self) -> None:
+        config = CaptureConfig.profiles()["Smoke"]
+        prusa = PrusaLinkConfig.from_values("prusa.local", "secret", 5)
+        recorder = SessionRecorder(2_000)
+        client = DragonClient(parse_target("dragon.local"), recorder)
+        client.request_timeout = 42.0
+
+        runner = CaptureRunner(
+            parse_target("dragon.local"),
+            config,
+            client=client,
+            prusalink_config=prusa,
+        )
+
+        self.assertEqual(
+            runner.snapshot()["source_estimated_records"],
+            prusa.estimated_capture_records(config.duration_seconds),
+        )
+
     def test_rejects_explicit_recorder_smaller_than_capture_schedule(self) -> None:
         config = CaptureConfig.profiles()["Long Haul"]
 
@@ -232,6 +272,36 @@ class CaptureRunnerTests(TestCase):
         self.assertEqual(terminal["samples_completed"], snapshot["samples_completed"])
         self.assertEqual(terminal["fetches_completed"], snapshot["fetches_completed"])
         self.assertFalse(any(record["kind"].startswith("sse_") for record in records))
+        self.assert_clean(runner)
+
+    def test_prusalink_internal_failure_does_not_abort_dragon_capture(self) -> None:
+        with DeviceFixture() as fixture:
+            target = parse_target(fixture.target)
+            recorder = SessionRecorder(2_000)
+            client = DragonClient(target, recorder)
+            prusa_config = PrusaLinkConfig.from_values("prusa.local", "secret", 1)
+            source = PrusaLinkSource(
+                prusa_config,
+                recorder,
+                opener=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                    RuntimeError("unexpected source failure")
+                ),
+            )
+            runner = CaptureRunner(
+                target,
+                short_config(),
+                client=client,
+                prusalink_source=source,
+            )
+
+            runner.start()
+            wait_until(lambda: runner.snapshot()["state"] == "completed")
+            snapshot = runner.snapshot()
+
+        self.assertGreaterEqual(snapshot["samples_completed"], 2)
+        self.assertEqual(snapshot["state_failures"], 0)
+        self.assertEqual(snapshot["prusalink"]["source_state"], "internal_error")
+        self.assertFalse(snapshot["prusalink"]["polling"])
         self.assert_clean(runner)
 
     def test_prusalink_transport_failure_is_recorded_without_stopping_capture(self) -> None:

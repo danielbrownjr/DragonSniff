@@ -504,7 +504,7 @@ class SessionManager:
             return result
         result = self.empty_snapshot()
         result["prusalink"] = self._prusalink_config.public_snapshot(
-            state="paused" if active_automation == "churn" else None
+            source_state="paused" if active_automation == "churn" else None
         )
         result["automation_return"] = automation_return
         result["churn"] = (

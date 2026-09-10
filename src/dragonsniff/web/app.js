@@ -621,7 +621,8 @@ function renderCapture(snapshot) {
 function renderPrusaLink(source) {
   const summary = payloadTools.prusalinkSummary(source);
   text("#prusalinkStatus", summary.status);
-  document.querySelector("#prusalinkStatus").dataset.status = source?.state || "disabled";
+  document.querySelector("#prusalinkStatus").dataset.status = source?.source_state || "disabled";
+  text("#prusalinkPolling", summary.polling);
   text("#prusalinkConnection", summary.connection);
   text("#prusalinkPrinterState", summary.printer);
   text("#prusalinkBed", summary.bed);

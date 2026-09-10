@@ -27,6 +27,7 @@ test("PrusaLink summary keeps disabled and unhealthy source state explicit", () 
   assert.deepEqual(prusalinkSummary({configured: false}), {
     configured: false,
     status: "Disabled",
+    polling: "Disabled",
     connection: "Not configured",
     printer: "—",
     bed: "—",
@@ -35,7 +36,8 @@ test("PrusaLink summary keeps disabled and unhealthy source state explicit", () 
   });
   assert.deepEqual(prusalinkSummary({
     configured: true,
-    state: "transport_error",
+    source_state: "transport_error",
+    polling: true,
     connected: false,
     authenticated: null,
     freshness: {state: "stale", sample_age_ms: 16250},
@@ -44,6 +46,7 @@ test("PrusaLink summary keeps disabled and unhealthy source state explicit", () 
   }), {
     configured: true,
     status: "Transport error",
+    polling: "Active",
     connection: "Last request disconnected",
     printer: "PRINTING",
     bed: "61.3 / 65.0 °C",
@@ -55,7 +58,8 @@ test("PrusaLink summary keeps disabled and unhealthy source state explicit", () 
 test("PrusaLink summary reports authenticated fresh state without inventing fields", () => {
   assert.deepEqual(prusalinkSummary({
     configured: true,
-    state: "healthy",
+    source_state: "healthy",
+    polling: true,
     connected: true,
     authenticated: true,
     freshness: {state: "fresh", sample_age_ms: 250},
@@ -63,12 +67,28 @@ test("PrusaLink summary reports authenticated fresh state without inventing fiel
   }), {
     configured: true,
     status: "Healthy",
+    polling: "Active",
     connection: "Last request connected · authenticated",
     printer: "IDLE",
     bed: "—",
     freshness: "Fresh · 0.3 s old",
     error: null,
   });
+});
+
+test("PrusaLink summary distinguishes paused and terminal internal state", () => {
+  assert.equal(prusalinkSummary({
+    configured: true,
+    source_state: "paused",
+    polling: false,
+  }).status, "Paused during Churn");
+  const failed = prusalinkSummary({
+    configured: true,
+    source_state: "internal_error",
+    polling: false,
+  });
+  assert.equal(failed.status, "Internal error · polling stopped");
+  assert.equal(failed.polling, "Stopped");
 });
 
 test("current evidence control follows authoritative recorder records", () => {

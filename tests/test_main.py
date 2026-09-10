@@ -206,6 +206,31 @@ class CommandLineTests(TestCase):
         ):
             _prusalink_api_key()
 
+    def test_empty_direct_secret_uses_bom_prefixed_file(self) -> None:
+        with NamedTemporaryFile() as secret:
+            secret.write(b"\xef\xbb\xbffile-secret\n")
+            secret.flush()
+            with patch.dict(
+                os.environ,
+                {
+                    "DRAGONSNIFF_PRUSALINK_API_KEY": "",
+                    "DRAGONSNIFF_PRUSALINK_API_KEY_FILE": secret.name,
+                },
+                clear=True,
+            ):
+                self.assertEqual(_prusalink_api_key(), "file-secret")
+
+    def test_empty_secret_file_setting_uses_direct_key(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "DRAGONSNIFF_PRUSALINK_API_KEY": "direct-secret",
+                "DRAGONSNIFF_PRUSALINK_API_KEY_FILE": "",
+            },
+            clear=True,
+        ):
+            self.assertEqual(_prusalink_api_key(), "direct-secret")
+
 
 class ServiceLifecycleTests(TestCase):
     def test_sigterm_requests_shutdown_and_closes_server(self) -> None:

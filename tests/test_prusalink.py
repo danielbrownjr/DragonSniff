@@ -3,14 +3,18 @@ from __future__ import annotations
 from io import BytesIO
 from http.client import BadStatusLine
 import json
+import time
 from tempfile import TemporaryDirectory
 from unittest import TestCase
+from unittest.mock import patch
 from urllib.error import HTTPError, URLError
 
 from dragonsniff.prusalink import (
+    MAX_CAPTURE_RESERVED_RECORDS,
     PRUSALINK_STATUS_PATH,
     PrusaLinkConfig,
     PrusaLinkConfigError,
+    PrusaLinkPayloadError,
     PrusaLinkSource,
 )
 from dragonsniff.recording import SessionRecorder
@@ -66,7 +70,8 @@ class PrusaLinkConfigTests(TestCase):
         source = PrusaLinkSource(config, recorder)
 
         self.assertFalse(config.enabled)
-        self.assertEqual(config.public_snapshot()["state"], "disabled")
+        self.assertEqual(config.public_snapshot()["source_state"], "disabled")
+        self.assertFalse(config.public_snapshot()["polling"])
         self.assertNotIn("api_key", config.public_snapshot())
         self.assertNotIn(
             "secret",
@@ -118,7 +123,9 @@ class PrusaLinkSourceTests(TestCase):
         self.assertEqual(record["endpoint"], PRUSALINK_STATUS_PATH)
         self.assertEqual(record["owner"], "capture")
         self.assertEqual(record["run_id"], "run-1")
-        self.assertEqual(record["status"], "healthy")
+        self.assertEqual(record["source_state"], "healthy")
+        self.assertNotIn("status", record)
+        self.assertEqual(record["response_status"], 200)
         self.assertEqual(record["freshness"]["state"], "fresh")
         self.assertEqual(
             record["data"],
@@ -146,11 +153,11 @@ class PrusaLinkSourceTests(TestCase):
         source = PrusaLinkSource(self.config, self.recorder, opener=opener)
         record = source.poll_once()
 
-        self.assertEqual(record["status"], "auth_error")
+        self.assertEqual(record["source_state"], "auth_error")
         self.assertFalse(record["authenticated"])
         self.assertTrue(record["connected"])
         self.assertEqual(record["error"]["kind"], "authentication")
-        self.assertEqual(source.snapshot()["state"], "auth_error")
+        self.assertEqual(source.snapshot()["source_state"], "auth_error")
         self.assertNotIn("top-secret-key", json.dumps(record))
 
     def test_transport_failure_is_evidence_and_secret_is_redacted(self) -> None:
@@ -160,7 +167,7 @@ class PrusaLinkSourceTests(TestCase):
         source = PrusaLinkSource(self.config, self.recorder, opener=opener)
         record = source.poll_once()
 
-        self.assertEqual(record["status"], "transport_error")
+        self.assertEqual(record["source_state"], "transport_error")
         self.assertFalse(record["connected"])
         self.assertEqual(record["freshness"]["state"], "unavailable")
         self.assertIn("<redacted>", record["error"]["message"])
@@ -177,7 +184,7 @@ class PrusaLinkSourceTests(TestCase):
 
         record = source.poll_once()
 
-        self.assertEqual(record["status"], "transport_error")
+        self.assertEqual(record["source_state"], "transport_error")
         self.assertEqual(record["error"]["kind"], "transport")
 
     def test_oversized_response_preserves_http_reachability(self) -> None:
@@ -190,7 +197,7 @@ class PrusaLinkSourceTests(TestCase):
 
         record = source.poll_once()
 
-        self.assertEqual(record["status"], "parse_error")
+        self.assertEqual(record["source_state"], "parse_error")
         self.assertEqual(record["error"]["kind"], "response_too_large")
         self.assertTrue(record["response_too_large"])
         self.assertTrue(record["connected"])
@@ -213,7 +220,7 @@ class PrusaLinkSourceTests(TestCase):
                     opener=lambda *_args, **_kwargs: FakeResponse(body),
                 )
                 record = source.poll_once()
-                self.assertEqual(record["status"], "parse_error")
+                self.assertEqual(record["source_state"], "parse_error")
                 self.assertEqual(record["parse_error_kind"], kind)
                 self.assertIsNone(record["data"])
 
@@ -238,7 +245,7 @@ class PrusaLinkSourceTests(TestCase):
 
                 record = source.poll_once()
 
-                self.assertEqual(record["status"], "parse_error")
+                self.assertEqual(record["source_state"], "parse_error")
                 self.assertEqual(record["parse_error_kind"], "schema")
                 self.assertIsNone(record["data"])
 
@@ -262,7 +269,7 @@ class PrusaLinkSourceTests(TestCase):
         snapshot = source.snapshot()
 
         self.assertEqual(first["freshness"]["sample_age_ms"], 0)
-        self.assertEqual(failed["status"], "parse_error")
+        self.assertEqual(failed["source_state"], "parse_error")
         self.assertEqual(failed["freshness"]["state"], "stale")
         self.assertEqual(failed["freshness"]["sample_age_ms"], 16_000)
         self.assertEqual(snapshot["last_success_timestamp"], first_success)
@@ -320,7 +327,7 @@ class PrusaLinkSourceTests(TestCase):
 
                 record = source.poll_once()
 
-                self.assertEqual(record["status"], "healthy")
+                self.assertEqual(record["source_state"], "healthy")
                 self.assertEqual(record["omitted_optional_fields"], omitted)
                 self.assertEqual(record["data"]["printer_state"], "IDLE")
                 self.assertEqual(record["data"]["bed_temperature_c"], 20.0)
@@ -359,7 +366,7 @@ class PrusaLinkSourceTests(TestCase):
 
         record = source.poll_once()
 
-        self.assertEqual(record["status"], "healthy")
+        self.assertEqual(record["source_state"], "healthy")
         self.assertEqual(record["freshness"]["state"], "fresh")
         self.assertEqual(record["freshness"]["sample_age_ms"], 0)
         self.assertEqual(record["omitted_optional_fields"], ["temp_nozzle"])
@@ -376,7 +383,7 @@ class PrusaLinkSourceTests(TestCase):
 
         record = source.poll_once()
 
-        self.assertEqual(record["status"], "parse_error")
+        self.assertEqual(record["source_state"], "parse_error")
         self.assertEqual(record["parse_error_kind"], "unsafe_text")
         json.dumps(record, ensure_ascii=False).encode("utf-8")
 
@@ -390,7 +397,7 @@ class PrusaLinkSourceTests(TestCase):
 
         record = source.poll_once()
 
-        self.assertEqual(record["status"], "healthy")
+        self.assertEqual(record["source_state"], "healthy")
         self.assertEqual(record["data"]["printer_state"], state)
 
     def test_device_cannot_echo_the_api_key_into_evidence(self) -> None:
@@ -404,9 +411,89 @@ class PrusaLinkSourceTests(TestCase):
 
         record = source.poll_once()
 
-        self.assertEqual(record["status"], "parse_error")
+        self.assertEqual(record["source_state"], "parse_error")
         self.assertEqual(record["parse_error_kind"], "credential_echo")
         self.assertNotIn("top-secret-key", json.dumps(record))
+
+    def test_short_key_does_not_reject_an_unrelated_printer_state(self) -> None:
+        config = PrusaLinkConfig.from_values("http://prusa.local", "I", 5)
+        source = PrusaLinkSource(
+            config,
+            self.recorder,
+            opener=lambda *_args, **_kwargs: FakeResponse(status_body(state="IDLE")),
+        )
+
+        record = source.poll_once()
+
+        self.assertEqual(record["source_state"], "healthy")
+        self.assertEqual(record["data"]["printer_state"], "IDLE")
+
+    def test_injected_schema_error_redacts_credentials(self) -> None:
+        source = PrusaLinkSource(
+            self.config,
+            self.recorder,
+            opener=lambda *_args, **_kwargs: FakeResponse(status_body()),
+        )
+
+        with patch(
+            "dragonsniff.prusalink.parse_prusalink_status",
+            side_effect=PrusaLinkPayloadError("schema top-secret-key"),
+        ):
+            record = source.poll_once()
+
+        self.assertEqual(record["parse_error_kind"], "schema")
+        self.assertNotIn("top-secret-key", json.dumps(record))
+        self.assertIn("<redacted>", json.dumps(record))
+
+    def test_injected_decode_error_redacts_credentials(self) -> None:
+        source = PrusaLinkSource(
+            self.config,
+            self.recorder,
+            opener=lambda *_args, **_kwargs: FakeResponse(status_body()),
+        )
+
+        with patch(
+            "dragonsniff.prusalink._decode",
+            return_value=("replacement text", "decode top-secret-key"),
+        ):
+            record = source.poll_once()
+
+        self.assertEqual(record["parse_error_kind"], "decode")
+        self.assertNotIn("top-secret-key", json.dumps(record))
+        self.assertIn("<redacted>", json.dumps(record))
+
+    def test_unexpected_worker_error_stops_and_is_truthful(self) -> None:
+        def broken(*_args, **_kwargs):
+            raise RuntimeError("unexpected top-secret-key")
+
+        source = PrusaLinkSource(self.config, self.recorder, opener=broken)
+        with self.assertLogs("dragonsniff.prusalink", level="ERROR") as logs:
+            self.assertTrue(source.start(context={"owner": "observation"}))
+            deadline = time.monotonic() + 2
+            while source.is_alive and time.monotonic() < deadline:
+                time.sleep(0.01)
+
+        snapshot = source.snapshot()
+        self.assertFalse(source.is_alive)
+        self.assertFalse(snapshot["polling"])
+        self.assertEqual(snapshot["source_state"], "internal_error")
+        self.assertEqual(snapshot["last_error"]["kind"], "internal")
+        evidence = json.dumps(self.recorder.snapshot()) + "\n".join(logs.output)
+        self.assertNotIn("top-secret-key", evidence)
+        self.assertIn("<redacted>", evidence)
+
+    def test_capture_source_reserve_is_bounded(self) -> None:
+        disabled = PrusaLinkConfig()
+        one_second = PrusaLinkConfig.from_values("prusa.local", "secret", 1)
+        five_seconds = PrusaLinkConfig.from_values("prusa.local", "secret", 5)
+
+        self.assertEqual(disabled.estimated_capture_records(28_800), 0)
+        self.assertEqual(one_second.estimated_capture_records(120), 142)
+        self.assertEqual(five_seconds.estimated_capture_records(120), 30)
+        self.assertEqual(
+            one_second.estimated_capture_records(28_800),
+            MAX_CAPTURE_RESERVED_RECORDS,
+        )
 
     def test_stale_state_is_explicit_and_a_new_good_sample_recovers(self) -> None:
         clock = Clock()
@@ -425,14 +512,14 @@ class PrusaLinkSourceTests(TestCase):
         clock.nanoseconds = 16_000_000_000
 
         self.assertEqual(source.snapshot()["freshness"]["state"], "stale")
-        self.assertEqual(source.snapshot()["state"], "stale")
+        self.assertEqual(source.snapshot()["source_state"], "stale")
         failed = source.poll_once()
-        self.assertEqual(failed["status"], "transport_error")
+        self.assertEqual(failed["source_state"], "transport_error")
         self.assertEqual(failed["freshness"]["state"], "stale")
 
         clock.nanoseconds = 17_000_000_000
         recovered = source.poll_once()
-        self.assertEqual(recovered["status"], "healthy")
+        self.assertEqual(recovered["source_state"], "healthy")
         self.assertEqual(recovered["freshness"]["state"], "fresh")
         self.assertEqual(source.snapshot()["data"]["printer_state"], "IDLE")
         self.assertIsNone(source.snapshot()["last_error"])
